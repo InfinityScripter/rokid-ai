@@ -59,6 +59,46 @@ export function startInboxServer(): void {
       return;
     }
 
+    // Нативный AIUI-агент Rokid (Customizable Agent): платформа шлёт УЖЕ
+    // распознанный ей текст; ответ — SSE-события message/error + done.
+    // Контракт снят с github.com/Hylouis233/rokid-hermes-connector.
+    if (req.method === 'POST' && route === '/sse') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      const sse = (event: string, payload: unknown) => {
+        if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+      };
+      try {
+        const raw = Buffer.concat(chunks).toString();
+        log('aiui-agent raw:', raw.slice(0, 500));
+        const body = JSON.parse(raw) as Record<string, unknown>;
+        const text = String(body.text ?? body.content ?? body.query ?? body.input ?? '').trim();
+        if (!text) {
+          sse('error', { error: 'пустой запрос' });
+          return;
+        }
+        const intent = await routeText(text, new Date());
+        log('aiui-agent intent:', JSON.stringify(intent));
+        const reply = await applyIntent(intent);
+        sse('message', { content: reply.text });
+        await bot.api.sendMessage(config.OWNER_TELEGRAM_ID, `🕶 Через агента Rokid:\n«${text}»\n\n${reply.text}`, {
+          reply_markup: reply.keyboard,
+        });
+      } catch (error) {
+        logError('aiui-agent', error);
+        sse('error', { error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        sse('done', { ok: true });
+        if (!res.writableEnded) res.end();
+      }
+      return;
+    }
+
     if (req.method === 'POST' && route === '/glasses/chat') {
       try {
         await handleGlassesChat(req, res);
