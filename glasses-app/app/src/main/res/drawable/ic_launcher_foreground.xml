@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Очки: две линзы и мостик -->
+    <path
+        android:pathData="M22,46 h20 a6,6 0 0 1 6,6 v8 a6,6 0 0 1 -6,6 h-20 a6,6 0 0 1 -6,-6 v-8 a6,6 0 0 1 6,-6 z"
+        android:strokeColor="#45F068"
+        android:strokeWidth="4"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M66,46 h20 a6,6 0 0 1 6,6 v8 a6,6 0 0 1 -6,6 h-20 a6,6 0 0 1 -6,-6 v-8 a6,6 0 0 1 6,-6 z"
+        android:strokeColor="#45F068"
+        android:strokeWidth="4"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M48,52 h12"
+        android:strokeColor="#45F068"
+        android:strokeWidth="4" />
+    <!-- Звуковая волна под очками -->
+    <path
+        android:pathData="M34,74 v6 M44,71 v12 M54,68 v18 M64,71 v12 M74,74 v6"
+        android:strokeColor="#45F068"
+        android:strokeWidth="4"
+        android:strokeLineCap="round" />
+</vector>

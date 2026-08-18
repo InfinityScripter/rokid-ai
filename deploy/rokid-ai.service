@@ -1,0 +1,14 @@
+[Unit]
+Description=rokid-ai bot (Telegram inbox, STT, intent router, calendars)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/rokid-ai
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

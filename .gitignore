@@ -1,0 +1,9 @@
+node_modules/
+.env
+glasses-app/local.properties
+glasses-app/**/build/
+glasses-app/.gradle/
+etap-0.md
+PLAN.md
+DESIGN-IS-*/
+.DS_Store
