@@ -32,6 +32,7 @@ export const intentSchema = z.discriminatedUnion('intent', [
       z.object({
         name: z.string(),
         amount: z.string().describe('порция словами: «2 тоста», «тарелка»'),
+        query: z.string().describe('название продукта по-английски для поиска в базе'),
       }),
     ),
     skipped: z.array(z.string()).default([]),
@@ -102,8 +103,12 @@ const routerTool: OpenAI.Chat.Completions.ChatCompletionTool = {
           type: 'array',
           items: {
             type: 'object',
-            properties: { name: { type: 'string' }, amount: { type: 'string' } },
-            required: ['name', 'amount'],
+            properties: {
+              name: { type: 'string' },
+              amount: { type: 'string' },
+              query: { type: 'string', description: 'название продукта по-английски для поиска в базе' },
+            },
+            required: ['name', 'amount', 'query'],
           },
         },
         topic: { type: 'string' },
@@ -162,7 +167,9 @@ export async function routeText(text: string, now: Date): Promise<Intent> {
         '«сегодня», «завтра», «на этой неделе». ' +
         'Просьба отменить или убрать последнюю запись/встречу/событие ' +
         '(«отмени последнюю запись», «убери это из календаря», «не надо было записывать») → cancel_last. ' +
-        'Еда («съел», «на обед было») → food_log. Просьба сделать саммари разговора → meeting_audio. ' +
+        'Еда («съел», «на обед было») → food_log. Для каждого продукта заполни query — короткое английское ' +
+        'название для поиска в американской базе продуктов («борщ» → "borscht", «два тоста с сыром» → ' +
+        '"toast with cheese"). Просьба сделать саммари разговора → meeting_audio. ' +
         'Всё прочее → note с исходным текстом.',
     },
   ]);
@@ -176,7 +183,9 @@ export async function parseFoodPhoto(imageBase64: string, mediaType: 'image/jpeg
       text:
         'Это фото еды с умных очков. Определи блюда и порции (intent=food_log). ' +
         'Приём пищи выбери по текущему времени в Москве: до 11 — breakfast, 11–16 — lunch, ' +
-        '16–22 — dinner, иначе other. Порции оценивай консервативно, словами.',
+        '16–22 — dinner, иначе other. Порции оценивай консервативно, словами. ' +
+        'Для каждого продукта заполни query — короткое английское название для поиска в американской базе ' +
+        'продуктов («борщ» → "borscht", «два тоста с сыром» → "toast with cheese").',
     },
   ]);
 }
