@@ -25,6 +25,7 @@ export function oauth1Params(opts: {
   params: Record<string, string>;
   token?: string;
   tokenSecret?: string;
+  method?: string;
 }): Record<string, string> {
   const all: Record<string, string> = {
     ...opts.params,
@@ -36,7 +37,9 @@ export function oauth1Params(opts: {
     ...(opts.token ? { oauth_token: opts.token } : {}),
   };
   const key = `${rfc3986(config.FATSECRET_CONSUMER_SECRET)}&${rfc3986(opts.tokenSecret ?? '')}`;
-  const signature = createHmac('sha1', key).update(oauth1BaseString('POST', opts.url, all)).digest('base64');
+  const signature = createHmac('sha1', key)
+    .update(oauth1BaseString(opts.method ?? 'POST', opts.url, all))
+    .digest('base64');
   return { ...all, oauth_signature: signature };
 }
 
@@ -77,7 +80,16 @@ async function oauth1Post(url: string, params: Record<string, string>): Promise<
     body: new URLSearchParams(params).toString(),
   });
   const text = await res.text();
-  if (!res.ok) throw new Error(`FatSecret OAuth1 ${url}: HTTP ${res.status} ${text}`);
+  if (!res.ok) throw new Error(`FatSecret OAuth1 ${url}: HTTP ${res.status}`);
+  return new URLSearchParams(text);
+}
+
+// Доки подтверждают GET для access_token — параметры (включая подпись) идут
+// в query string, тела нет.
+async function oauth1Get(url: string, params: Record<string, string>): Promise<URLSearchParams> {
+  const res = await fetch(`${url}?${new URLSearchParams(params).toString()}`, { method: 'GET' });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`FatSecret OAuth1 ${url}: HTTP ${res.status}`);
   return new URLSearchParams(text);
 }
 
@@ -89,7 +101,7 @@ export async function fsStartLink(): Promise<{ authorizeUrl: string }> {
   const body = await oauth1Post(OAUTH1_REQUEST_TOKEN_URL, signed);
   const token = body.get('oauth_token');
   const secret = body.get('oauth_token_secret');
-  if (!token || !secret) throw new Error(`FatSecret request_token: пустой ответ ${body.toString()}`);
+  if (!token || !secret) throw new Error('FatSecret request_token: пустой или неполный ответ');
   pendingRequestToken = { token, secret };
   return { authorizeUrl: `${OAUTH1_AUTHORIZE_URL}?oauth_token=${rfc3986(token)}` };
 }
@@ -103,11 +115,12 @@ export async function fsFinishLink(pin: string): Promise<void> {
     params: { oauth_verifier: pin },
     token: pendingRequestToken.token,
     tokenSecret: pendingRequestToken.secret,
+    method: 'GET',
   });
-  const body = await oauth1Post(OAUTH1_ACCESS_TOKEN_URL, signed);
+  const body = await oauth1Get(OAUTH1_ACCESS_TOKEN_URL, signed);
   const token = body.get('oauth_token');
   const secret = body.get('oauth_token_secret');
-  if (!token || !secret) throw new Error(`FatSecret access_token: пустой ответ ${body.toString()}`);
+  if (!token || !secret) throw new Error('FatSecret access_token: пустой или неполный ответ');
   saveUserToken({ token, secret });
   pendingRequestToken = null;
 }

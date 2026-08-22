@@ -27,7 +27,7 @@ test('oauth1BaseString: сортировка, RFC3986-кодирование, к
 test('fsStartLink → fsFinishLink → fsLinked → fsUserRequest: полный флоу привязки', async (t) => {
   const tokenPath = config.SQLITE_PATH.replace(/\.sqlite$/, '.fatsecret.json');
   const originalFetch = globalThis.fetch;
-  const calls: { url: string; body: string }[] = [];
+  const calls: { url: string; method: string; body: string }[] = [];
   t.after(() => {
     globalThis.fetch = originalFetch;
     rmSync(tokenPath, { force: true });
@@ -35,11 +35,12 @@ test('fsStartLink → fsFinishLink → fsLinked → fsUserRequest: полный 
 
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     const href = url.toString();
-    calls.push({ url: href, body: String(init?.body ?? '') });
+    const method = init?.method ?? 'GET';
+    calls.push({ url: href, method, body: String(init?.body ?? '') });
     if (href === 'https://authentication.fatsecret.com/oauth/request_token') {
       return new Response('oauth_token=req-token&oauth_token_secret=req-secret&oauth_callback_confirmed=true');
     }
-    if (href === 'https://authentication.fatsecret.com/oauth/access_token') {
+    if (href.startsWith('https://authentication.fatsecret.com/oauth/access_token')) {
       return new Response('oauth_token=acc-token&oauth_token_secret=acc-secret');
     }
     if (href === 'https://platform.fatsecret.com/rest/server.api') {
@@ -54,15 +55,20 @@ test('fsStartLink → fsFinishLink → fsLinked → fsUserRequest: полный 
 
   const { authorizeUrl } = await fsStartLink();
   assert.equal(authorizeUrl, 'https://authentication.fatsecret.com/oauth/authorize?oauth_token=req-token');
+  assert.equal(calls[0].method, 'POST');
   assert.match(calls[0].body, /oauth_callback=oob/);
 
   await fsFinishLink('123456');
-  assert.match(calls[1].body, /oauth_verifier=123456/);
-  assert.match(calls[1].body, /oauth_token=req-token/);
+  assert.equal(calls[1].method, 'GET');
+  assert.equal(calls[1].body, '');
+  assert.match(calls[1].url, /^https:\/\/authentication\.fatsecret\.com\/oauth\/access_token\?/);
+  assert.match(calls[1].url, /oauth_verifier=123456/);
+  assert.match(calls[1].url, /oauth_token=req-token/);
 
   assert.equal(fsLinked(), true);
 
   const profile = await fsUserRequest({ method: 'profile.get' });
   assert.deepEqual(profile, { profile: { user_id: '1' } });
+  assert.equal(calls[2].method, 'POST');
   assert.match(calls[2].body, /oauth_token=acc-token/);
 });
