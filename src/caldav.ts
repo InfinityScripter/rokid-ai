@@ -43,6 +43,7 @@ export async function caldavCreateEvent(params: {
   title: string;
   start: Date;
   durationMinutes: number;
+  location?: string;
 }): Promise<CaldavCreated> {
   const { client, calendar } = await getPersonalCalendar();
   const uid = `${randomUUID()}@rokid-ai`;
@@ -57,6 +58,7 @@ export async function caldavCreateEvent(params: {
     `DTSTART:${toIcsDate(params.start)}`,
     `DTEND:${toIcsDate(end)}`,
     `SUMMARY:${params.title.replace(/([,;\\])/g, '\\$1')}`,
+    ...(params.location ? [`LOCATION:${params.location.replace(/([,;\\])/g, '\\$1')}`] : []),
     'END:VEVENT',
     'END:VCALENDAR',
   ].join('\r\n');
@@ -93,6 +95,40 @@ export async function caldavFindDuplicate(title: string, start: Date): Promise<s
     }
   }
   return null;
+}
+
+export type CalendarEntry = { title: string; start: Date };
+
+function parseIcsDate(raw: string): Date | null {
+  // Форматы iCloud: 20260821T110000Z, 20260821T110000 (локальное), 20260821 (весь день).
+  const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/.exec(raw.trim());
+  if (!m) return null;
+  const [, y, mo, d, hh = '00', mi = '00', ss = '00', zulu] = m;
+  const iso = `${y}-${mo}-${d}T${hh}:${mi}:${ss}${zulu ? 'Z' : '+03:00'}`;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** События личного календаря за период, отсортированные по времени. */
+export async function caldavListEvents(from: Date, to: Date): Promise<CalendarEntry[]> {
+  const { client, calendar } = await getPersonalCalendar();
+  const objects = await client.fetchCalendarObjects({
+    calendar,
+    timeRange: { start: from.toISOString(), end: to.toISOString() },
+  });
+  const entries: CalendarEntry[] = [];
+  for (const obj of objects) {
+    const data = obj.data ?? '';
+    const title = /SUMMARY:(.+)/.exec(data)?.[1]?.trim().replace(/\\([,;\\])/g, '$1');
+    const start = /DTSTART[^:]*:(.+)/.exec(data)?.[1];
+    const parsed = start ? parseIcsDate(start) : null;
+    if (!title || !parsed) continue;
+    // Повторяющиеся события iCloud отдаёт одним объектом с исходной датой —
+    // такие вне запрошенного окна отбрасываем, чтобы не показывать прошлое.
+    if (parsed < from || parsed > to) continue;
+    entries.push({ title, start: parsed });
+  }
+  return entries.sort((a, b) => a.start.getTime() - b.start.getTime());
 }
 
 export async function caldavDeleteEvent(created: CaldavCreated): Promise<void> {

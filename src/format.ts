@@ -5,6 +5,7 @@ type CalendarEventFields = {
   start: string;
   durationMinutes: number;
   calendar: 'work' | 'personal';
+  location?: string;
 };
 
 export function formatEventLine(event: CalendarEventFields): string {
@@ -16,7 +17,8 @@ export function formatEventLine(event: CalendarEventFields): string {
     minute: '2-digit',
   });
   const calendar = event.calendar === 'work' ? 'рабочий' : 'личный';
-  return `«${event.title}» — ${when}, ${event.durationMinutes} мин (${calendar})`;
+  const place = event.location ? `, 📍 ${event.location}` : '';
+  return `«${event.title}» — ${when}, ${event.durationMinutes} мин (${calendar})${place}`;
 }
 
 function skippedLine(skipped: string[]): string[] {
@@ -44,5 +46,10 @@ export function formatIntent(intent: Intent): string {
       return `🎙 Похоже на запись встречи: «${intent.topic}». Конвейер саммари подключим на этапе 5.`;
     case 'note':
       return [`📝 Заметка: ${intent.text}`, ...skippedLine(intent.skipped)].join('\n');
+    // Обычно перехватываются в applyIntent до форматирования.
+    case 'cancel_last':
+      return '↩️ Отменяю последнюю запись…';
+    case 'agenda':
+      return `📅 Смотрю ${intent.period}…`;
   }
 }

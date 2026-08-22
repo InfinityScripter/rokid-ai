@@ -49,14 +49,16 @@ export async function createCalendarEvent(params: {
   start: Date;
   durationMinutes: number;
   calendar: CalendarKind;
+  location?: string;
 }): Promise<CreatedEvent> {
   const calendarName = calendarNameOf(params.calendar);
+  const locationProp = params.location ? `, location:"${escapeAs(params.location)}"` : '';
   const script = withTimeout([
     ...dateSetupLines('startDate', params.start),
     `set endDate to startDate + ${params.durationMinutes} * minutes`,
     'tell application "Calendar"',
     `	tell calendar "${escapeAs(calendarName)}"`,
-    `		set newEvent to make new event with properties {summary:"${escapeAs(params.title)}", start date:startDate, end date:endDate}`,
+    `		set newEvent to make new event with properties {summary:"${escapeAs(params.title)}", start date:startDate, end date:endDate${locationProp}}`,
     '		return uid of newEvent',
     '	end tell',
     'end tell',

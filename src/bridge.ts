@@ -41,6 +41,7 @@ async function processJob(job: WorkJob): Promise<{ status: 'done' | 'skipped'; r
     start: new Date(payload.start),
     durationMinutes: payload.durationMinutes,
     calendar: 'work',
+    location: payload.location,
   });
   return { status: 'done', result: JSON.stringify(created) };
 }

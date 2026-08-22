@@ -13,6 +13,7 @@ export type CalendarEventInput = {
   start: string;
   durationMinutes: number;
   calendar: 'work' | 'personal';
+  location?: string;
 };
 
 export type UndoRef =
@@ -28,6 +29,7 @@ export async function writeOneEvent(event: CalendarEventInput): Promise<WriteOut
       title: event.title,
       start: event.start,
       durationMinutes: event.durationMinutes,
+      location: event.location,
     };
     const id = enqueueJob('create', payload);
     log('queue: enqueued create job', id, event.title);
@@ -57,6 +59,7 @@ export async function writeOneEvent(event: CalendarEventInput): Promise<WriteOut
       title: event.title,
       start: new Date(event.start),
       durationMinutes: event.durationMinutes,
+      location: event.location,
     });
     return {
       line: `✅ ${formatEventLine(event)} → «${config.APPLE_CALENDAR_PERSONAL}»`,
@@ -69,6 +72,7 @@ export async function writeOneEvent(event: CalendarEventInput): Promise<WriteOut
     start: new Date(event.start),
     durationMinutes: event.durationMinutes,
     calendar: event.calendar,
+    location: event.location,
   });
   log('calendar: created', event.title, '→', created.calendarName);
   return {

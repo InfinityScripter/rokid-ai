@@ -18,6 +18,7 @@ export const intentSchema = z.discriminatedUnion('intent', [
           start: z.string().describe('ISO 8601 с таймзоной'),
           durationMinutes: z.number(),
           calendar: z.enum(['work', 'personal']),
+          location: z.string().optional().describe('место или адрес события, если названы'),
         }),
       )
       .min(1),
@@ -44,6 +45,15 @@ export const intentSchema = z.discriminatedUnion('intent', [
     text: z.string(),
     skipped: z.array(z.string()).default([]),
   }),
+  z.object({
+    intent: z.literal('cancel_last'),
+  }),
+  z.object({
+    intent: z.literal('agenda'),
+    from: z.string().describe('начало периода, ISO 8601 с таймзоной'),
+    to: z.string().describe('конец периода, ISO 8601 с таймзоной'),
+    period: z.string().describe('о каком периоде спрашивают: «сегодня», «завтра», «на этой неделе»'),
+  }),
 ]);
 
 export type Intent = z.infer<typeof intentSchema>;
@@ -56,7 +66,13 @@ const routerTool: OpenAI.Chat.Completions.ChatCompletionTool = {
     parameters: {
       type: 'object',
       properties: {
-        intent: { type: 'string', enum: ['calendar_event', 'food_log', 'meeting_audio', 'note'] },
+        intent: {
+          type: 'string',
+          enum: ['calendar_event', 'food_log', 'meeting_audio', 'note', 'cancel_last', 'agenda'],
+        },
+        from: { type: 'string', description: 'ISO 8601 с таймзоной — начало периода для agenda' },
+        to: { type: 'string', description: 'ISO 8601 с таймзоной — конец периода для agenda' },
+        period: { type: 'string', description: 'период словами для agenda: «сегодня», «завтра»' },
         events: {
           type: 'array',
           description: 'ВСЕ упомянутые события — их может быть несколько',
@@ -67,6 +83,10 @@ const routerTool: OpenAI.Chat.Completions.ChatCompletionTool = {
               start: { type: 'string', description: 'ISO 8601 с таймзоной Europe/Moscow' },
               durationMinutes: { type: 'number' },
               calendar: { type: 'string', enum: ['work', 'personal'] },
+              location: {
+                type: 'string',
+                description: 'место или адрес события целиком, как названо в заметке',
+              },
             },
             required: ['title', 'start', 'durationMinutes', 'calendar'],
           },
@@ -118,11 +138,17 @@ export async function routeText(text: string, now: Date): Promise<Intent> {
         `Сейчас ${now.toISOString()} (таймзона пользователя Europe/Moscow).\n` +
         'Расшифровка голосовой заметки с умных очков:\n' +
         `<заметка>${text}</заметка>\n\n` +
+        'Заметка может прийти на английском: распознавание умных очков переводит русскую речь ' +
+        'на английский. Все тексты, которые ты возвращаешь (title, uncertain, skipped, text), ' +
+        'ВСЕГДА пиши по-русски — переводи, если исходная фраза на другом языке. ' +
         'Определи намерение. Если в заметке несколько встреч — верни ВСЕ в массиве events. ' +
         'Правила выбора календаря: рабочие маркеры (синк, ревью, 1:1, ' +
         'созвон с коллегами, «рабочий») → work; остальное → personal. ' +
         'Относительные даты («завтра», «в среду») переводи в ISO от текущего момента. ' +
         'Длительность не названа — ставь 60 минут, это НЕ повод для uncertain. ' +
+        'Если названо место или адрес — верни его в location целиком, ничего не выкидывая ' +
+        '(город, улица, дом, корпус, литера, кабинет). В title место не дублируй. ' +
+        'Место не названо — location не заполняй, это НЕ повод для uncertain. ' +
         'В uncertain пиши только настоящие дыры: нет времени, названное время уже прошло ' +
         '(тогда спроси «время уже прошло — ты про завтра?»), непонятно какое событие. Не выдумывай. ' +
         'Повторяющиеся события («каждый вторник») НЕ поддерживаются: в events не включай, ' +
@@ -130,6 +156,12 @@ export async function routeText(text: string, now: Date): Promise<Intent> {
         'Если в заметке несколько разных тем (встреча И еда) — обработай главную ' +
         '(календарь приоритетнее еды, еда приоритетнее заметки), остальные перечисли в skipped ' +
         'с просьбой прислать отдельным сообщением. ' +
+        'Вопрос о планах — «что у меня сегодня», «какие встречи завтра», «что на этой неделе», ' +
+        'what is on my calendar today → agenda: посчитай период from/to в ISO от текущего момента ' +
+        '(сегодня = с начала до конца текущего дня по Москве) и в period напиши период словами: ' +
+        '«сегодня», «завтра», «на этой неделе». ' +
+        'Просьба отменить или убрать последнюю запись/встречу/событие ' +
+        '(«отмени последнюю запись», «убери это из календаря», «не надо было записывать») → cancel_last. ' +
         'Еда («съел», «на обед было») → food_log. Просьба сделать саммари разговора → meeting_audio. ' +
         'Всё прочее → note с исходным текстом.',
     },

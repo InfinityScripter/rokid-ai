@@ -16,7 +16,7 @@ export type WorkJob = {
   createdAt: string;
 };
 
-export type CreatePayload = { title: string; start: string; durationMinutes: number };
+export type CreatePayload = { title: string; start: string; durationMinutes: number; location?: string };
 export type DeletePayload = { calendarName: string; uid: string };
 
 type QueueFile = { nextId: number; jobs: WorkJob[] };
