@@ -5,9 +5,10 @@ import { Bot, InlineKeyboard } from 'grammy';
 
 import { caldavListEvents } from './caldav.js';
 import { config } from './config.js';
-import { fsFinishLink, fsStartLink } from './fatsecret.js';
+import { fsFinishLink, fsLinked, fsStartLink } from './fatsecret.js';
 import { writeOneEvent, undoOne, type CalendarEventInput, type UndoRef } from './events.js';
-import { formatEventLine, formatIntent } from './format.js';
+import { matchFoodItems, type FoodMatch } from './food.js';
+import { formatEventLine, formatFoodCard, formatIntent } from './format.js';
 import { log, logError } from './log.js';
 import type { Intent } from './router.js';
 import { parseFoodPhoto, routeText } from './router.js';
@@ -19,6 +20,7 @@ const MEETING_AUDIO_THRESHOLD_SECONDS = 180;
 // вежливо отвечают «устарело», это осознанный компромисс.
 const undoable = new Map<string, UndoRef[]>();
 const pendingWork = new Map<string, CalendarEventInput[]>();
+export const pendingFood = new Map<string, { meal: string; matches: FoodMatch[] }>();
 // Ключ последней записи — для голосовой команды «отмени последнюю запись».
 let lastUndoKey: string | null = null;
 
@@ -85,12 +87,29 @@ async function showAgenda(from: string, to: string, title: string): Promise<Inte
   return { text: [`📅 ${title} (личный календарь):`, ...lines].join('\n') };
 }
 
+async function showFoodCard(
+  meal: 'breakfast' | 'lunch' | 'dinner' | 'other',
+  items: { name: string; amount: string; query: string }[],
+): Promise<IntentReply> {
+  if (!fsLinked()) {
+    return { text: 'Сначала привяжи аккаунт: /fatsecret_link' };
+  }
+  const matches = await matchFoodItems(items);
+  const key = randomUUID();
+  pendingFood.set(key, { meal, matches });
+  const keyboard = new InlineKeyboard().text('✅ Записать', `food-yes:${key}`).text('❌ Не надо', `food-no:${key}`);
+  return { text: formatFoodCard(meal, matches), keyboard };
+}
+
 export async function applyIntent(intent: Intent): Promise<IntentReply> {
   if (intent.intent === 'agenda') {
     return showAgenda(intent.from, intent.to, intent.period);
   }
   if (intent.intent === 'cancel_last') {
     return cancelLast();
+  }
+  if (intent.intent === 'food_log') {
+    return showFoodCard(intent.meal, intent.items);
   }
   if (intent.intent !== 'calendar_event' || intent.uncertain.length > 0) {
     return { text: formatIntent(intent) };
@@ -170,6 +189,23 @@ bot.callbackQuery(/^work-no:(.+)$/, async (ctx) => {
   const existed = pendingWork.delete(ctx.match[1]);
   await ctx.answerCallbackQuery({ text: existed ? 'Ок, не записываю' : 'Эта карточка устарела' });
   if (existed) await ctx.reply('❌ Рабочее не записала.');
+});
+
+bot.callbackQuery(/^food-yes:(.+)$/, async (ctx) => {
+  const pending = pendingFood.get(ctx.match[1]);
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: 'Эта карточка устарела (возможно, бот перезапускался)' });
+    return;
+  }
+  pendingFood.delete(ctx.match[1]);
+  await ctx.answerCallbackQuery({ text: 'Записываю…' });
+  await ctx.reply('writeFoodEntries ещё не подключён');
+});
+
+bot.callbackQuery(/^food-no:(.+)$/, async (ctx) => {
+  const existed = pendingFood.delete(ctx.match[1]);
+  await ctx.answerCallbackQuery({ text: existed ? 'Ок, не записываю' : 'Эта карточка устарела' });
+  if (existed) await ctx.reply('❌ Еду не записала.');
 });
 
 async function downloadTelegramFile(fileId: string): Promise<{ buffer: Buffer; remotePath: string }> {

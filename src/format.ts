@@ -1,3 +1,4 @@
+import type { FoodMatch } from './food.js';
 import type { Intent } from './router.js';
 
 type CalendarEventFields = {
@@ -19,6 +20,17 @@ export function formatEventLine(event: CalendarEventFields): string {
   const calendar = event.calendar === 'work' ? 'рабочий' : 'личный';
   const place = event.location ? `, 📍 ${event.location}` : '';
   return `«${event.title}» — ${when}, ${event.durationMinutes} мин (${calendar})${place}`;
+}
+
+export function formatFoodCard(meal: 'breakfast' | 'lunch' | 'dinner' | 'other', matches: FoodMatch[]): string {
+  const meals = { breakfast: 'завтрак', lunch: 'обед', dinner: 'ужин', other: 'перекус' };
+  const lines = matches.map((m) =>
+    m.food
+      ? `• ${m.name} (${m.amount}) → ${m.food.foodName}${m.grams ? `, ${m.grams} г` : ''} — ${m.calories} ккал`
+      : `• ${m.name} (${m.amount}) — ${m.note}`,
+  );
+  const total = matches.reduce((sum, m) => sum + (m.calories ?? 0), 0);
+  return [`🍽 ${meals[meal]}:`, ...lines, `Итого: ${total} ккал`, 'powered by fatsecret'].join('\n');
 }
 
 function skippedLine(skipped: string[]): string[] {
