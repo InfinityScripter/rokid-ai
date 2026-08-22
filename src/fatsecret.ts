@@ -238,6 +238,15 @@ export async function fsGetServings(foodId: string): Promise<FsServing[]> {
   }));
 }
 
+// Дневник FatSecret — по московскому дню, не по UTC: ужин в 00:30 МСК должен
+// попасть в сегодняшний день, а не во вчерашний (UTC в это время суток ещё
+// накануне). en-CA даёт готовый Y-M-D, из которого строим UTC-полночь этого
+// дня и делим на сутки — так же, как этого требует формат FatSecret.
+export function mskDayNumber(date: Date): number {
+  const [year, month, day] = date.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' }).split('-').map(Number);
+  return Date.UTC(year, month - 1, day) / 86_400_000;
+}
+
 export type CreateFoodEntryInput = {
   foodId: string;
   name: string;
@@ -261,7 +270,7 @@ export async function fsCreateFoodEntry(entry: CreateFoodEntryInput): Promise<st
     serving_id: entry.servingId,
     number_of_units: String(entry.units),
     meal: entry.meal,
-    date: String(Math.floor(entry.date.getTime() / 86_400_000)),
+    date: String(mskDayNumber(entry.date)),
   })) as { food_entry_id?: RawFoodEntryId };
   const id = typeof data.food_entry_id === 'string' ? data.food_entry_id : data.food_entry_id?.value;
   if (!id) throw new Error('FatSecret food_entry.create: ответ без food_entry_id');

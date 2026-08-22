@@ -37,35 +37,57 @@ function save(data: BufferFile): void {
   writeFileSync(bufferPath(), JSON.stringify(data, null, 2));
 }
 
-export function bufferPush(entries: BufferedEntry[]): void {
-  if (entries.length === 0) return;
-  const data = load();
-  data.entries.push(...entries);
-  save(data);
+// bufferPush (синхронная запись) может попасть между итерациями bufferFlush
+// (сеть внутри send даёт event loop переключиться) и затереть файл его
+// устаревшим снимком данных — поэтому обе операции идут через одну цепочку
+// промисов, а не пишут файл напрямую.
+let chain: Promise<void> = Promise.resolve();
+
+function enqueue<T>(task: () => T | Promise<T>): Promise<T> {
+  const run = chain.then(task);
+  chain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+export function bufferPush(entries: BufferedEntry[]): Promise<void> {
+  if (entries.length === 0) return Promise.resolve();
+  return enqueue(() => {
+    const data = load();
+    data.entries.push(...entries);
+    save(data);
+  });
 }
 
 // Шлёт буфер по порядку через send; при первой же ошибке останавливается и
 // оставляет непровереннную запись и всё, что за ней, в файле — это и есть
 // признак «Premier ещё не одобрен» (или другая ошибка FatSecret), на который
 // смотрит вызывающий код (food-yes в bot.ts, периодический флаш в index.ts).
-export async function bufferFlush(
+// Сохраняем файл после каждой успешной отправки, а не одним разом после
+// цикла: если процесс упадёт посреди флаша, уже отправленные записи не
+// улетят в FatSecret повторно при следующем запуске.
+export function bufferFlush(
   send: (entry: BufferedEntry) => Promise<string>,
 ): Promise<{ sent: number; left: number; error?: unknown }> {
-  const data = load();
-  let sent = 0;
-  let error: unknown;
-  while (data.entries.length > 0) {
-    try {
-      await send(data.entries[0]);
-      data.entries.shift();
-      sent += 1;
-    } catch (e) {
-      error = e;
-      break;
+  return enqueue(async () => {
+    const data = load();
+    let sent = 0;
+    let error: unknown;
+    while (data.entries.length > 0) {
+      try {
+        await send(data.entries[0]);
+        data.entries.shift();
+        sent += 1;
+        save(data);
+      } catch (e) {
+        error = e;
+        break;
+      }
     }
-  }
-  save(data);
-  return { sent, left: data.entries.length, error };
+    return { sent, left: data.entries.length, error };
+  });
 }
 
 // Готовый отправитель через fsCreateFoodEntry — второй реальный потребитель

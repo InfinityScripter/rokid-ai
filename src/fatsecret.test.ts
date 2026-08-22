@@ -1,9 +1,19 @@
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 
-import { config } from './config.js';
-import { fsFinishLink, fsLinked, fsStartLink, fsUserRequest, oauth1BaseString } from './fatsecret.js';
+// SQLITE_PATH задаём во временную папку ДО импорта config.js — иначе тест
+// привязки читал бы и удалял боевой файл токена пользователя. Статические
+// импорты хойстятся, поэтому используем динамический import() уже после
+// того, как переменная окружения выставлена.
+process.env.SQLITE_PATH = path.join(mkdtempSync(path.join(os.tmpdir(), 'rokid-ai-fatsecret-test-')), 'test.sqlite');
+
+const { config } = await import('./config.js');
+const { fsFinishLink, fsLinked, fsStartLink, fsUserRequest, mskDayNumber, oauth1BaseString } = await import(
+  './fatsecret.js'
+);
 
 test('oauth1BaseString: сортировка, RFC3986-кодирование, кириллица', () => {
   const base = oauth1BaseString('POST', 'https://platform.fatsecret.com/rest/server.api', {
@@ -24,6 +34,17 @@ test('oauth1BaseString: сортировка, RFC3986-кодирование, к
   );
 });
 
+test('mskDayNumber: 00:30 МСК (21:30 UTC накануне) попадает в сегодняшний московский день', () => {
+  // 22 августа 00:30 МСК = 21 августа 21:30 UTC.
+  const day = mskDayNumber(new Date('2026-08-21T21:30:00.000Z'));
+  assert.equal(day, Date.UTC(2026, 7, 22) / 86_400_000);
+});
+
+test('mskDayNumber: 23:30 МСК того же UTC-дня — тот же московский день', () => {
+  const day = mskDayNumber(new Date('2026-08-22T20:30:00.000Z'));
+  assert.equal(day, Date.UTC(2026, 7, 22) / 86_400_000);
+});
+
 test('fsStartLink → fsFinishLink → fsLinked → fsUserRequest: полный флоу привязки', async (t) => {
   const tokenPath = config.SQLITE_PATH.replace(/\.sqlite$/, '.fatsecret.json');
   const originalFetch = globalThis.fetch;
@@ -31,6 +52,7 @@ test('fsStartLink → fsFinishLink → fsLinked → fsUserRequest: полный 
   t.after(() => {
     globalThis.fetch = originalFetch;
     rmSync(tokenPath, { force: true });
+    rmSync(path.dirname(config.SQLITE_PATH), { recursive: true, force: true });
   });
 
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
