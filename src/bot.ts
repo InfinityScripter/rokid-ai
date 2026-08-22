@@ -5,6 +5,7 @@ import { Bot, InlineKeyboard } from 'grammy';
 
 import { caldavListEvents } from './caldav.js';
 import { config } from './config.js';
+import { fsFinishLink, fsStartLink } from './fatsecret.js';
 import { writeOneEvent, undoOne, type CalendarEventInput, type UndoRef } from './events.js';
 import { formatEventLine, formatIntent } from './format.js';
 import { log, logError } from './log.js';
@@ -187,6 +188,33 @@ bot.command('start', async (ctx) => {
       '📷 Фото еды → определю блюда и порции\n' +
       '✍️ Текст → то же, что и голосовое',
   );
+});
+
+bot.command('fatsecret_link', async (ctx) => {
+  try {
+    const { authorizeUrl } = await fsStartLink();
+    await ctx.reply(
+      `Открой ссылку, разреши доступ и пришли PIN командой /fatsecret_pin <код>:\n${authorizeUrl}`,
+    );
+  } catch (error) {
+    logError('fatsecret_link', error);
+    await ctx.reply(`Не смогла запросить ссылку у FatSecret: ${error instanceof Error ? error.message : String(error)}`);
+  }
+});
+
+bot.command('fatsecret_pin', async (ctx) => {
+  const pin = (ctx.match ?? '').trim();
+  if (!pin) {
+    await ctx.reply('Нужен код: /fatsecret_pin 123456');
+    return;
+  }
+  try {
+    await fsFinishLink(pin);
+    await ctx.reply('✅ Аккаунт FatSecret привязан — теперь могу писать в твой дневник.');
+  } catch (error) {
+    logError('fatsecret_pin', error);
+    await ctx.reply(`Не смогла привязать аккаунт: ${error instanceof Error ? error.message : String(error)}`);
+  }
 });
 
 bot.on(['message:voice', 'message:audio'], async (ctx) => {

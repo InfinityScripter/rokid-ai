@@ -1,4 +1,6 @@
 import { createHmac, randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 
 import { config } from './config.js';
 
@@ -36,6 +38,102 @@ export function oauth1Params(opts: {
   const key = `${rfc3986(config.FATSECRET_CONSUMER_SECRET)}&${rfc3986(opts.tokenSecret ?? '')}`;
   const signature = createHmac('sha1', key).update(oauth1BaseString('POST', opts.url, all)).digest('base64');
   return { ...all, oauth_signature: signature };
+}
+
+// 3-legged OAuth 1.0 (PIN/oob-флоу) — привязка личного дневника пользователя.
+// https://platform.fatsecret.com/docs/guides/authentication/oauth1/three-legged
+const OAUTH1_REQUEST_TOKEN_URL = 'https://authentication.fatsecret.com/oauth/request_token';
+const OAUTH1_AUTHORIZE_URL = 'https://authentication.fatsecret.com/oauth/authorize';
+const OAUTH1_ACCESS_TOKEN_URL = 'https://authentication.fatsecret.com/oauth/access_token';
+
+type UserToken = { token: string; secret: string };
+
+function fatsecretTokenPath(): string {
+  return config.SQLITE_PATH.replace(/\.sqlite$/, '.fatsecret.json');
+}
+
+function loadUserToken(): UserToken | null {
+  try {
+    return JSON.parse(readFileSync(fatsecretTokenPath(), 'utf8')) as UserToken;
+  } catch {
+    return null;
+  }
+}
+
+function saveUserToken(token: UserToken): void {
+  const filePath = fatsecretTokenPath();
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, JSON.stringify(token, null, 2));
+}
+
+// Незавершённая привязка (между /fatsecret_link и /fatsecret_pin) живёт в
+// памяти процесса — как undoable/pendingWork в bot.ts.
+let pendingRequestToken: UserToken | null = null;
+
+async function oauth1Post(url: string, params: Record<string, string>): Promise<URLSearchParams> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params).toString(),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`FatSecret OAuth1 ${url}: HTTP ${res.status} ${text}`);
+  return new URLSearchParams(text);
+}
+
+export async function fsStartLink(): Promise<{ authorizeUrl: string }> {
+  const signed = oauth1Params({
+    url: OAUTH1_REQUEST_TOKEN_URL,
+    params: { oauth_callback: 'oob' },
+  });
+  const body = await oauth1Post(OAUTH1_REQUEST_TOKEN_URL, signed);
+  const token = body.get('oauth_token');
+  const secret = body.get('oauth_token_secret');
+  if (!token || !secret) throw new Error(`FatSecret request_token: пустой ответ ${body.toString()}`);
+  pendingRequestToken = { token, secret };
+  return { authorizeUrl: `${OAUTH1_AUTHORIZE_URL}?oauth_token=${rfc3986(token)}` };
+}
+
+export async function fsFinishLink(pin: string): Promise<void> {
+  if (!pendingRequestToken) {
+    throw new Error('Сначала запроси ссылку командой /fatsecret_link — код без неё не привязать');
+  }
+  const signed = oauth1Params({
+    url: OAUTH1_ACCESS_TOKEN_URL,
+    params: { oauth_verifier: pin },
+    token: pendingRequestToken.token,
+    tokenSecret: pendingRequestToken.secret,
+  });
+  const body = await oauth1Post(OAUTH1_ACCESS_TOKEN_URL, signed);
+  const token = body.get('oauth_token');
+  const secret = body.get('oauth_token_secret');
+  if (!token || !secret) throw new Error(`FatSecret access_token: пустой ответ ${body.toString()}`);
+  saveUserToken({ token, secret });
+  pendingRequestToken = null;
+}
+
+export function fsLinked(): boolean {
+  return loadUserToken() !== null;
+}
+
+export async function fsUserRequest(params: Record<string, string>): Promise<unknown> {
+  const userToken = loadUserToken();
+  if (!userToken) throw new Error('Аккаунт FatSecret не привязан — сначала /fatsecret_link');
+  const signed = oauth1Params({
+    url: 'https://platform.fatsecret.com/rest/server.api',
+    params: { ...params, format: 'json' },
+    token: userToken.token,
+    tokenSecret: userToken.secret,
+  });
+  const res = await fetch('https://platform.fatsecret.com/rest/server.api', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(signed).toString(),
+  });
+  if (!res.ok) throw new Error(`FatSecret ${params.method}: HTTP ${res.status} ${await res.text()}`);
+  const data = (await res.json()) as { error?: { code: number; message: string } };
+  if (data.error) throw new Error(`FatSecret ${params.method}: ${data.error.code} ${data.error.message}`);
+  return data;
 }
 
 let oauth2Token: { value: string; expiresAt: number } | null = null;
