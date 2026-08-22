@@ -224,9 +224,9 @@ bot.callbackQuery(/^food-yes:(.+)$/, async (ctx) => {
     if (result.left > 0 && isInvalidTokenError(result.error)) {
       await ctx.reply('⚠️ Токен доступа устарел — перепривяжи аккаунт: /fatsecret_link');
     } else if (result.left > 0) {
+      const sentPart = result.sent > 0 ? `✅ Записала ${result.sent} — ` : '';
       await ctx.reply(
-        `📤 Заявка Premier Free ещё на рассмотрении: сохранила ${entries.length} позиций, ` +
-          'отправлю сама, как только FatSecret откроет запись.',
+        `${sentPart}📤 ещё ${result.left} жду одобрения Premier Free, отправлю сама, как только FatSecret откроет запись.`,
       );
     } else {
       await ctx.reply(`✅ Записала в FatSecret (${result.sent} позиций) — смотри в приложении.\npowered by fatsecret`);
