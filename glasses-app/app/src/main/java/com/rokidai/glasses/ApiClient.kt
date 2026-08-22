@@ -45,6 +45,24 @@ class ApiClient(private val baseUrl: String, private val token: String) {
         client.newCall(request).execute().use { it.isSuccessful }
     }.getOrDefault(false)
 
+    /**
+     * Профиль отображения из «Пробы зрения»: размер текста, который владелец
+     * читает без двоения, и нужен ли жирный шрифт. Пусто — пробы ещё не было.
+     */
+    fun visionProfile(): Pair<Int, Boolean>? = runCatching {
+        val request = Request.Builder()
+            .url("$baseUrl/vision/profile/")
+            .header("Authorization", "Bearer $token")
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return@runCatching null
+            val json = JSONObject(response.body?.string() ?: return@runCatching null)
+            val size = json.optInt("size", 0)
+            if (size <= 0) null else size to json.optBoolean("bold", false)
+        }
+    }.getOrNull()
+
     /** Блокирующий вызов: события отдаются в callback по мере прихода. */
     fun chat(wav: ByteArray, recordingId: String = UUID.randomUUID().toString(), onEvent: (type: String, text: String) -> Unit) {
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)

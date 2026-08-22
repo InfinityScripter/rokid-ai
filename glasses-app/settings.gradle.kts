@@ -13,3 +13,5 @@ dependencyResolutionManagement {
 }
 rootProject.name = "rokid-ai-glasses"
 include(":app")
+include(":vision")
+include(":vats")

@@ -19,7 +19,6 @@ class QueueStore(private val dir: File) {
     fun pending(): List<File> =
         (dir.listFiles { f -> f.name.endsWith(".wav") } ?: emptyArray()).sortedBy { it.name }
 
-    fun remove(file: File) {
-        file.delete()
-    }
+    /** false — файл не удалился; вызывающий обязан прервать цикл досылки. */
+    fun remove(file: File): Boolean = file.delete()
 }

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Уголки-скобки, как вокруг цели в VATS-худе. -->
+    <path
+        android:pathData="M42,30 L30,30 L30,42 M66,30 L78,30 L78,42 M42,78 L30,78 L30,66 M66,78 L78,78 L78,66"
+        android:strokeColor="#45F068"
+        android:strokeWidth="4"
+        android:strokeLineCap="square" />
+    <!-- Прицел с разрывом в центре. -->
+    <path
+        android:pathData="M37,54 L48,54 M60,54 L71,54 M54,37 L54,48 M54,60 L54,71"
+        android:strokeColor="#45F068"
+        android:strokeWidth="3"
+        android:strokeLineCap="square" />
+    <path
+        android:pathData="M54,54 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0"
+        android:fillColor="#45F068" />
+</vector>

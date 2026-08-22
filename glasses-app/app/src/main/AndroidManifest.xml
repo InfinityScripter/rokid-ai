@@ -8,9 +8,11 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <application
-        android:label="Rokid AI Inbox"
+        android:label="Инбокс"
         android:icon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
 
@@ -23,7 +25,26 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Голосовой вызов: ассистент очков и «открой Инбокс» ведут сюда. -->
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <action android:name="android.intent.action.VOICE_COMMAND" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
+
+        <!-- Служба «наготове»: ловит кнопку дужки, когда экран приложения закрыт. -->
+        <service
+            android:name=".ListenerService"
+            android:exported="false" />
+
+        <receiver
+            android:name=".MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name=".ConfigReceiver"

@@ -8,24 +8,35 @@ import java.io.ByteArrayOutputStream
 import kotlin.math.sqrt
 
 // Запись с микрофона очков: PCM 16 кГц моно 16 бит, на stop() приклеивается
-// WAV-заголовок. Автостоп: после начала речи тишина >= SILENCE_MS завершает
-// запись сама (onAutoStop дёргается один раз, из фонового потока).
+// WAV-заголовок. Автостоп: пороги речи/тишины считаются от плавающего пола
+// фонового шума (на улице шумно, в комнате тихо — жёсткий порог не работает
+// ни там, ни там). Пол мгновенно падает до самого тихого кадра и медленно
+// ползёт вверх, поэтому речь прямо со старта записи его не отравляет: первая
+// же пауза между словами возвращает пол к реальному фону. Гистерезис: речь
+// фиксируется по верхнему порогу, а «ещё не тишина» — по нижнему, чтобы
+// тихий хвост фразы не запускал таймер сброса. onAutoStop и onLevel
+// дёргаются из фонового потока.
 class WavRecorder {
     private companion object {
         const val SAMPLE_RATE = 16000
         const val MIN_SPEECH_BYTES = 12800
-        const val SPEECH_RMS = 900.0
-        const val SILENCE_MS = 1800L
+        const val NOISE_FLOOR_RISE = 1.005
+        const val MIN_SPEECH_RMS = 500.0
+        const val MIN_SILENCE_RMS = 300.0
+        const val SILENCE_MS = 2200L
+        const val NO_SPEECH_MS = 8_000L
         const val MAX_RECORD_MS = 60_000L
     }
 
     private var audioRecord: AudioRecord? = null
     private var thread: Thread? = null
     private val pcm = ByteArrayOutputStream()
+    @Volatile private var speechDetected = false
 
     @SuppressLint("MissingPermission")
-    fun start(onAutoStop: () -> Unit) {
+    fun start(onLevel: (Double) -> Unit, onAutoStop: () -> Unit) {
         pcm.reset()
+        speechDetected = false
         val minBuffer = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
         )
@@ -38,7 +49,7 @@ class WavRecorder {
         thread = Thread {
             val buffer = ByteArray(minBuffer)
             val startedAt = System.currentTimeMillis()
-            var speechStarted = false
+            var noiseFloor = -1.0
             var lastLoudAt = System.currentTimeMillis()
             var autoStopFired = false
             while (audioRecord === record) {
@@ -46,14 +57,21 @@ class WavRecorder {
                 if (read <= 0) continue
                 synchronized(pcm) { pcm.write(buffer, 0, read) }
                 val rms = rms(buffer, read)
+                onLevel(rms)
                 val now = System.currentTimeMillis()
-                if (rms >= SPEECH_RMS) {
-                    speechStarted = true
+                noiseFloor = if (noiseFloor < 0) rms else minOf(rms, noiseFloor * NOISE_FLOOR_RISE)
+                val speechThreshold = maxOf(noiseFloor * 3.0, MIN_SPEECH_RMS)
+                val silenceThreshold = maxOf(noiseFloor * 1.8, MIN_SILENCE_RMS)
+                if (rms >= speechThreshold) {
+                    speechDetected = true
+                    lastLoudAt = now
+                } else if (speechDetected && rms >= silenceThreshold) {
                     lastLoudAt = now
                 }
-                val silentTooLong = speechStarted && now - lastLoudAt >= SILENCE_MS
+                val silentTooLong = speechDetected && now - lastLoudAt >= SILENCE_MS
+                val noSpeechTooLong = !speechDetected && now - startedAt >= NO_SPEECH_MS
                 val recordTooLong = now - startedAt >= MAX_RECORD_MS
-                if (!autoStopFired && (silentTooLong || recordTooLong)) {
+                if (!autoStopFired && (silentTooLong || noSpeechTooLong || recordTooLong)) {
                     autoStopFired = true
                     onAutoStop()
                 }
@@ -72,7 +90,7 @@ class WavRecorder {
         return sqrt(sum / (length / 2))
     }
 
-    /** null — если запись слишком короткая (случайный клик). */
+    /** null — если запись слишком короткая (случайный клик) или речи в ней не было. */
     fun stop(): ByteArray? {
         val record = audioRecord ?: return null
         audioRecord = null
@@ -81,7 +99,7 @@ class WavRecorder {
         record.stop()
         record.release()
         val data = synchronized(pcm) { pcm.toByteArray() }
-        if (data.size < MIN_SPEECH_BYTES) return null
+        if (!speechDetected || data.size < MIN_SPEECH_BYTES) return null
         return wrapWav(data)
     }
 
