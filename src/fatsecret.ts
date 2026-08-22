@@ -237,3 +237,49 @@ export async function fsGetServings(foodId: string): Promise<FsServing[]> {
     carbs: Number(s.carbohydrate),
   }));
 }
+
+export type CreateFoodEntryInput = {
+  foodId: string;
+  name: string;
+  servingId: string;
+  units: number;
+  meal: string;
+  date: Date;
+};
+
+type RawFoodEntryId = { value: string } | string;
+
+// Параметры и формат сверены по докам: https://platform.fatsecret.com/docs/v1/food_entry.create
+// (food_id, food_entry_name, serving_id, number_of_units, meal, date — целое
+// число дней с 1970-01-01 UTC). Пишет в личный дневник, поэтому идёт через
+// fsUserRequest (OAuth 1.0, 3-legged), а не через fsApi (OAuth 2.0).
+export async function fsCreateFoodEntry(entry: CreateFoodEntryInput): Promise<string> {
+  const data = (await fsUserRequest({
+    method: 'food_entry.create',
+    food_id: entry.foodId,
+    food_entry_name: entry.name,
+    serving_id: entry.servingId,
+    number_of_units: String(entry.units),
+    meal: entry.meal,
+    date: String(Math.floor(entry.date.getTime() / 86_400_000)),
+  })) as { food_entry_id?: RawFoodEntryId };
+  const id = typeof data.food_entry_id === 'string' ? data.food_entry_id : data.food_entry_id?.value;
+  if (!id) throw new Error('FatSecret food_entry.create: ответ без food_entry_id');
+  return id;
+}
+
+// Для тестовых записей (Step 5 брифа) — убрать то, что записалось до
+// одобрения Premier. Доки: https://platform.fatsecret.com/docs/v1/food_entry.delete
+export async function fsDeleteFoodEntry(foodEntryId: string): Promise<void> {
+  await fsUserRequest({ method: 'food_entry.delete', food_entry_id: foodEntryId });
+}
+
+// FatSecret код 9 (OAuth 1.0) — "Invalid access token": токен пользователя
+// невалиден или истёк, чинится только через повторную привязку /fatsecret_link.
+// Отдельного кода на «Premier ещё не одобрен» доки не дают (проверено по
+// https://platform.fatsecret.com/docs/guides/error-codes) — поэтому это
+// единственная распознаваемая по коду ошибка, а всё остальное в food_entry.create
+// трактуем как проблему прав/буферизации. Это эвристика, не гарантия.
+export function isInvalidTokenError(error: unknown): boolean {
+  return error instanceof Error && /FatSecret \S+: 9 /.test(error.message);
+}

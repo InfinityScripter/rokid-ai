@@ -47,13 +47,10 @@ export function formatIntent(intent: Intent): string {
       lines.push(...skippedLine(intent.skipped));
       return lines.join('\n');
     }
-    case 'food_log': {
-      const meals = { breakfast: 'завтрак', lunch: 'обед', dinner: 'ужин', other: 'перекус' };
-      const items = intent.items.map((i) => `• ${i.name} — ${i.amount}`).join('\n');
-      return [`🍽 Еда (${meals[intent.meal]}):`, items, '(запись в дневник подключим на этапе 4)', ...skippedLine(intent.skipped)].join(
-        '\n',
-      );
-    }
+    // Недостижимо: food_log перехватывается в applyIntent (showFoodCard) до
+    // вызова formatIntent — ветка нужна только для exhaustiveness-проверки TS.
+    case 'food_log':
+      return '';
     case 'meeting_audio':
       return `🎙 Похоже на запись встречи: «${intent.topic}». Конвейер саммари подключим на этапе 5.`;
     case 'note':

@@ -5,8 +5,9 @@ import { Bot, InlineKeyboard } from 'grammy';
 
 import { caldavListEvents } from './caldav.js';
 import { config } from './config.js';
-import { fsFinishLink, fsLinked, fsStartLink } from './fatsecret.js';
+import { fsFinishLink, fsLinked, fsStartLink, isInvalidTokenError } from './fatsecret.js';
 import { writeOneEvent, undoOne, type CalendarEventInput, type UndoRef } from './events.js';
+import { bufferPush, flushWithFatSecret, type BufferedEntry } from './food-buffer.js';
 import { matchFoodItems, type FoodMatch } from './food.js';
 import { formatEventLine, formatFoodCard, formatIntent } from './format.js';
 import { log, logError } from './log.js';
@@ -199,7 +200,41 @@ bot.callbackQuery(/^food-yes:(.+)$/, async (ctx) => {
   }
   pendingFood.delete(ctx.match[1]);
   await ctx.answerCallbackQuery({ text: 'Записываю…' });
-  await ctx.reply('writeFoodEntries ещё не подключён');
+
+  const entries: BufferedEntry[] = [];
+  for (const m of pending.matches) {
+    if (!m.food || !m.servingId) continue;
+    entries.push({
+      foodId: m.food.foodId,
+      name: m.food.foodName,
+      servingId: m.servingId,
+      units: m.units,
+      meal: pending.meal,
+      date: new Date().toISOString(),
+    });
+  }
+  if (entries.length === 0) {
+    await ctx.reply('Нечего записывать — ни одна позиция не сматчилась с продуктом.');
+    return;
+  }
+
+  try {
+    bufferPush(entries);
+    const result = await flushWithFatSecret();
+    if (result.left > 0 && isInvalidTokenError(result.error)) {
+      await ctx.reply('⚠️ Токен доступа устарел — перепривяжи аккаунт: /fatsecret_link');
+    } else if (result.left > 0) {
+      await ctx.reply(
+        `📤 Заявка Premier Free ещё на рассмотрении: сохранила ${entries.length} позиций, ` +
+          'отправлю сама, как только FatSecret откроет запись.',
+      );
+    } else {
+      await ctx.reply(`✅ Записала в FatSecret (${result.sent} позиций) — смотри в приложении.\npowered by fatsecret`);
+    }
+  } catch (error) {
+    logError('food-yes', error);
+    await ctx.reply(`Ошибка записи: ${error instanceof Error ? error.message : String(error)}`);
+  }
 });
 
 bot.callbackQuery(/^food-no:(.+)$/, async (ctx) => {
