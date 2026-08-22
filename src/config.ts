@@ -26,6 +26,10 @@ const envSchema = z.object({
   SQLITE_PATH: z.string().default('data/rokid-ai.sqlite'),
   // Для мостика на Маке: адрес VDS-инстанса
   BRIDGE_BASE_URL: z.string().default(''),
+  FATSECRET_CLIENT_ID: z.string().default(''),
+  FATSECRET_CLIENT_SECRET: z.string().default(''),
+  FATSECRET_CONSUMER_KEY: z.string().default(''),
+  FATSECRET_CONSUMER_SECRET: z.string().default(''),
 });
 
 // Пустая строка в .env (`KEY=`) — то же самое, что незаданная переменная:
