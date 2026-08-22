@@ -2,20 +2,38 @@ import { createServer } from 'node:http';
 import { writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 
+import { z } from 'zod';
+
 import { applyIntent, bot } from './bot.js';
+import { caldavListEvents } from './caldav.js';
 import { config } from './config.js';
 import { formatEventLine } from './format.js';
 import { handleGlassesChat } from './glasses.js';
+import { handleChatCompletions } from './openai-compat.js';
 import { log, logError } from './log.js';
 import { completeJob, getJob, pendingJobs, type CreatePayload } from './queue.js';
 import { parseFoodPhoto, routeText } from './router.js';
 import { transcribe } from './stt.js';
+import { analyzeVision, loadProfile, saveProfile, ZONES } from './vision.js';
 
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 30;
 
 const requestTimestampsByIp = new Map<string, number[]>();
+
+const visionReportSchema = z.object({
+  answers: z
+    .array(
+      z.object({
+        size: z.number().positive(),
+        bold: z.boolean(),
+        zone: z.enum(ZONES),
+        read: z.boolean(),
+      }),
+    )
+    .min(1),
+});
 
 function rateLimited(ip: string): boolean {
   const now = Date.now();
@@ -54,7 +72,11 @@ export function startInboxServer(): void {
       return;
     }
 
-    if (req.headers.authorization !== `Bearer ${config.INBOX_TOKEN}`) {
+    // Платформа Rokid (AIUI-агент) шлёт ключ либо Bearer'ом, либо в X-Auth-AK.
+    const authorized =
+      req.headers.authorization === `Bearer ${config.INBOX_TOKEN}` ||
+      req.headers['x-auth-ak'] === config.INBOX_TOKEN;
+    if (!authorized) {
       respond(401, { message: 'unauthorized' });
       return;
     }
@@ -95,6 +117,64 @@ export function startInboxServer(): void {
       } finally {
         sse('done', { ok: true });
         if (!res.writableEnded) res.end();
+      }
+      return;
+    }
+
+    // Расписание на сегодня для экрана очков: без модели и без зеркала в
+    // Telegram — это просто показ, а не заметка.
+    if (req.method === 'GET' && route?.startsWith('/agenda')) {
+      try {
+        // Период — сегментом пути (/agenda/tomorrow), а не параметром: прокси
+        // на Vercel передаёт только путь, «хвост» запроса до нас не доезжает.
+        const range = route.split('/').filter(Boolean)[1] ?? 'today';
+        const now = new Date();
+        const from = new Date(now);
+        from.setHours(0, 0, 0, 0);
+        const to = new Date(now);
+        to.setHours(23, 59, 59, 999);
+        if (range === 'tomorrow') {
+          from.setDate(from.getDate() + 1);
+          to.setDate(to.getDate() + 1);
+        }
+        if (range === 'week') {
+          to.setDate(to.getDate() + 7);
+        }
+        const events = await caldavListEvents(from, to);
+        const lines = events.map((event) => {
+          const when = event.start.toLocaleString('ru-RU', {
+            timeZone: 'Europe/Moscow',
+            hour: '2-digit',
+            minute: '2-digit',
+            ...(range === 'today' ? {} : { day: 'numeric', month: 'short' }),
+          });
+          return `${when} ${event.title}`;
+        });
+        const titles = { today: 'СЕГОДНЯ', tomorrow: 'ЗАВТРА', week: 'НЕДЕЛЯ' };
+        respond(200, {
+          title: titles[range as keyof typeof titles] ?? 'СЕГОДНЯ',
+          text: lines.length > 0 ? lines.join('\n') : 'Встреч нет',
+        });
+      } catch (error) {
+        logError('agenda', error);
+        respond(500, { message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    // Профиль отображения, подобранный «Пробой зрения»: его читают и
+    // приложение на очках, и агент-табло, чтобы рисовать читаемым размером.
+    if (req.method === 'GET' && route?.startsWith('/vision/profile')) {
+      respond(200, loadProfile() ?? { size: 0, bold: false, zone: 'center', updatedAt: '' });
+      return;
+    }
+
+    if (req.method === 'POST' && (route === '/v1/chat/completions' || route === '/chat/completions')) {
+      try {
+        await handleChatCompletions(req, res);
+      } catch (error) {
+        logError('openai-compat', error);
+        respond(500, { message: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
@@ -145,6 +225,20 @@ export function startInboxServer(): void {
         respond(200, { message: 'ok' });
       } catch (error) {
         logError('bridge-complete', error);
+        respond(400, { message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && route === '/vision/report') {
+      try {
+        const parsed = visionReportSchema.parse(JSON.parse(body.toString()));
+        const { profile, report, screen } = analyzeVision(parsed.answers);
+        saveProfile(profile);
+        await bot.api.sendMessage(config.OWNER_TELEGRAM_ID, report);
+        respond(200, screen);
+      } catch (error) {
+        logError('vision-report', error);
         respond(400, { message: error instanceof Error ? error.message : String(error) });
       }
       return;

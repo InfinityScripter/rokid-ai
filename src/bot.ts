@@ -3,6 +3,7 @@ import { writeFile, rm } from 'node:fs/promises';
 
 import { Bot, InlineKeyboard } from 'grammy';
 
+import { caldavListEvents } from './caldav.js';
 import { config } from './config.js';
 import { writeOneEvent, undoOne, type CalendarEventInput, type UndoRef } from './events.js';
 import { formatEventLine, formatIntent } from './format.js';
@@ -17,6 +18,8 @@ const MEETING_AUDIO_THRESHOLD_SECONDS = 180;
 // вежливо отвечают «устарело», это осознанный компромисс.
 const undoable = new Map<string, UndoRef[]>();
 const pendingWork = new Map<string, CalendarEventInput[]>();
+// Ключ последней записи — для голосовой команды «отмени последнюю запись».
+let lastUndoKey: string | null = null;
 
 export type IntentReply = { text: string; keyboard?: InlineKeyboard };
 
@@ -41,10 +44,53 @@ async function writeEvents(events: CalendarEventInput[]): Promise<{ lines: strin
 function undoKeyboard(undos: UndoRef[]): InlineKeyboard {
   const key = randomUUID();
   undoable.set(key, undos);
+  lastUndoKey = key;
   return new InlineKeyboard().text('↩️ Отменить', `undo:${key}`);
 }
 
+// Голосовая отмена: то же, что нажать «↩️ Отменить» под последней записью.
+async function cancelLast(): Promise<IntentReply> {
+  const key = lastUndoKey;
+  const undos = key ? undoable.get(key) : undefined;
+  if (!key || !undos) {
+    return { text: 'Отменять нечего: не вижу недавней записи (или её уже отменили).' };
+  }
+  undoable.delete(key);
+  lastUndoKey = null;
+  const results: string[] = [];
+  for (const ref of undos) {
+    results.push(await undoOne(ref));
+  }
+  return { text: `↩️ Отмена: ${results.join('; ')}` };
+}
+
+// «Что у меня сегодня» — читаем личный календарь. Рабочие встречи живут в
+// Calendar.app на Маке и сюда не видны: об этом честно пишем в ответе.
+async function showAgenda(from: string, to: string, title: string): Promise<IntentReply> {
+  const events = await caldavListEvents(new Date(from), new Date(to));
+  if (events.length === 0) {
+    return { text: `📅 ${title}: пусто в личном календаре.` };
+  }
+  const lines = events.map((event) => {
+    const when = event.start.toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      hour: '2-digit',
+      minute: '2-digit',
+      day: 'numeric',
+      month: 'short',
+    });
+    return `• ${when} — ${event.title}`;
+  });
+  return { text: [`📅 ${title} (личный календарь):`, ...lines].join('\n') };
+}
+
 export async function applyIntent(intent: Intent): Promise<IntentReply> {
+  if (intent.intent === 'agenda') {
+    return showAgenda(intent.from, intent.to, intent.period);
+  }
+  if (intent.intent === 'cancel_last') {
+    return cancelLast();
+  }
   if (intent.intent !== 'calendar_event' || intent.uncertain.length > 0) {
     return { text: formatIntent(intent) };
   }
@@ -60,6 +106,7 @@ export async function applyIntent(intent: Intent): Promise<IntentReply> {
   if (undos.length > 0) {
     const key = randomUUID();
     undoable.set(key, undos);
+    lastUndoKey = key;
     keyboard.text('↩️ Отменить', `undo:${key}`).row();
     hasButtons = true;
   }
@@ -85,6 +132,7 @@ bot.callbackQuery(/^undo:(.+)$/, async (ctx) => {
     return;
   }
   undoable.delete(ctx.match[1]);
+  if (lastUndoKey === ctx.match[1]) lastUndoKey = null;
   await ctx.answerCallbackQuery({ text: 'Отменяю…' });
   try {
     const results: string[] = [];
