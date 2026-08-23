@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { config } from './config.js';
+import { log } from './log.js';
 
 // Весь HTTP к FatSecret. Поиск — OAuth 2.0 (client credentials, IP-whitelist),
 // дневник пользователя — OAuth 1.0 (HMAC-SHA1): у FatSecret это два разных
@@ -165,17 +166,41 @@ async function getOauth2Token(): Promise<string> {
   return data.access_token;
 }
 
-async function fsApi(params: Record<string, string>): Promise<unknown> {
-  const token = await getOauth2Token();
-  const res = await fetch('https://platform.fatsecret.com/rest/server.api', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ ...params, format: 'json' }).toString(),
+function parseFsResponse(method: string, res: Response): Promise<unknown> {
+  return res.text().then((text) => {
+    if (!res.ok) throw new Error(`FatSecret ${method}: HTTP ${res.status}`);
+    const data = JSON.parse(text) as { error?: { code: number; message: string } };
+    if (data.error) throw new Error(`FatSecret ${method}: ${data.error.code} ${data.error.message}`);
+    return data;
   });
-  if (!res.ok) throw new Error(`FatSecret ${params.method}: HTTP ${res.status} ${await res.text()}`);
-  const data = (await res.json()) as { error?: { code: number; message: string } };
-  if (data.error) throw new Error(`FatSecret ${params.method}: ${data.error.code} ${data.error.message}`);
-  return data;
+}
+
+async function fsApi(params: Record<string, string>): Promise<unknown> {
+  try {
+    const token = await getOauth2Token();
+    const res = await fetch('https://platform.fatsecret.com/rest/server.api', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ ...params, format: 'json' }).toString(),
+    });
+    return await parseFsResponse(params.method, res);
+  } catch (error) {
+    // Белый список IP действует только на OAuth 2.0 и применяется до 24 часов
+    // после правки — при ошибке 21 «Invalid IP» повторяем запрос с подписью
+    // OAuth 1.0 (consumer-ключи, без токена пользователя), у него списка нет.
+    if (!String(error).includes('Invalid IP')) throw error;
+    log('fatsecret: OAuth2 отбит по IP, повторяю с подписью OAuth1');
+    const signed = oauth1Params({
+      url: 'https://platform.fatsecret.com/rest/server.api',
+      params: { ...params, format: 'json' },
+    });
+    const res = await fetch('https://platform.fatsecret.com/rest/server.api', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(signed).toString(),
+    });
+    return await parseFsResponse(params.method, res);
+  }
 }
 
 export type FsFood = { foodId: string; name: string; brand: string | null; description: string };
