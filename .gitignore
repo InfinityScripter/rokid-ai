@@ -8,3 +8,8 @@ PLAN.md
 DESIGN-IS-*/
 .DS_Store
 aiui-agent/
+
+# Артефакты сборки Android и локальный конфиг с токеном — в git им не место
+glasses-app/**/build/
+glasses-app/.gradle/
+glasses-app/local.properties
