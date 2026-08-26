@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+// Раньше остальных локальных импортов: food.js тянет config.js, который
+// без этих переменных завершает процесс.
+import './test-env.js';
+
 import type { FsFood, FsServing } from './fatsecret.js';
 import { matchFoodItems } from './food.js';
 
