@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
+import './test-env.js';
+
 // SQLITE_PATH задаём во временную папку ДО импорта config.js — иначе тест
 // привязки читал бы и удалял боевой файл токена пользователя. Статические
 // импорты хойстятся, поэтому используем динамический import() уже после

@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
+import './test-env.js';
+
 import type { BufferedEntry } from './food-buffer.js';
 
 // SQLITE_PATH задаём во временную папку ДО импорта config.js — иначе тест
