@@ -52,7 +52,10 @@ export function formatIntent(intent: Intent): string {
     case 'food_log':
       return '';
     case 'meeting_audio':
-      return `🎙 Похоже на запись встречи: «${intent.topic}». Конвейер саммари подключим на этапе 5.`;
+      return (
+        `🎙 Похоже на разговор про встречу: «${intent.topic}». ` +
+        'Пришли саму запись голосовым или аудиофайлом (длиннее 3 минут) — сделаю саммари.'
+      );
     case 'note':
       return [`📝 Заметка: ${intent.text}`, ...skippedLine(intent.skipped)].join('\n');
     // Обычно перехватываются в applyIntent до форматирования.
