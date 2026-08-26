@@ -9,11 +9,12 @@ import Busboy from 'busboy';
 import { applyIntent, bot } from './bot.js';
 import { config } from './config.js';
 import { log, logError } from './log.js';
-import { routeText } from './router.js';
+import { parseFoodPhoto, routeText } from './router.js';
 import { transcribe } from './stt.js';
 
 // Ручка для приложения на очках, протокол в стиле rode (docs/glasses-protocol.md):
-// POST /glasses/chat, multipart (audio = WAV, опц. recordingId для идемпотентности),
+// POST /glasses/chat, multipart (audio = WAV, опц. image = JPEG для фото еды,
+// опц. recordingId для идемпотентности),
 // ответ — SSE-поток: user → status → answer → done; ошибки — событием error.
 
 const TURN_TIMEOUT_MS = 40_000;
@@ -37,21 +38,21 @@ function markProcessed(id: string): void {
   writeFileSync(processedIdsPath(), JSON.stringify(ids.slice(-500)));
 }
 
-type GlassesUpload = { audio: Buffer | null; recordingId: string | null };
+type GlassesUpload = { audio: Buffer | null; image: Buffer | null; recordingId: string | null };
 
 function parseMultipart(req: IncomingMessage): Promise<GlassesUpload> {
   return new Promise((resolve, reject) => {
     const busboy = Busboy({ headers: req.headers, limits: { fileSize: 25 * 1024 * 1024, files: 2 } });
-    const result: GlassesUpload = { audio: null, recordingId: null };
+    const result: GlassesUpload = { audio: null, image: null, recordingId: null };
     busboy.on('file', (name, stream) => {
-      if (name !== 'audio') {
+      if (name !== 'audio' && name !== 'image') {
         stream.resume();
         return;
       }
       const chunks: Buffer[] = [];
       stream.on('data', (chunk: Buffer) => chunks.push(chunk));
       stream.on('close', () => {
-        result.audio = Buffer.concat(chunks);
+        result[name] = Buffer.concat(chunks);
       });
     });
     busboy.on('field', (name, value) => {
@@ -102,18 +103,23 @@ export async function handleGlassesChat(req: IncomingMessage, res: ServerRespons
   try {
     await writeFile(audioPath, upload.audio);
     const text = await transcribe(audioPath);
-    if (!text) {
+    // С фото пустая расшифровка не беда: снимок сам по себе полноценная
+    // заметка о еде, голос — лишь необязательная подпись к нему.
+    if (!text && !upload.image) {
       send({ type: 'error', text: 'Не разобрала речь — запись пустая или шумная.' });
       return;
     }
-    send({ type: 'user', text });
-    send({ type: 'status', text: 'Думаю…' });
-    const intent = await routeText(text, new Date());
+    if (text) send({ type: 'user', text });
+    send({ type: 'status', text: upload.image ? 'Смотрю на фото…' : 'Думаю…' });
+    const intent = upload.image
+      ? await parseFoodPhoto(upload.image.toString('base64'), 'image/jpeg', text || undefined)
+      : await routeText(text, new Date());
     log('glasses intent:', JSON.stringify(intent));
     const reply = await applyIntent(intent);
     send({ type: 'answer', text: reply.text });
     if (upload.recordingId) markProcessed(upload.recordingId);
-    await bot.api.sendMessage(config.OWNER_TELEGRAM_ID, `📥 С очков:\nРасшифровка: «${text}»\n\n${reply.text}`, {
+    const transcriptLine = text ? `Расшифровка: «${text}»\n\n` : '';
+    await bot.api.sendMessage(config.OWNER_TELEGRAM_ID, `📥 С очков:\n${transcriptLine}${reply.text}`, {
       reply_markup: reply.keyboard,
     });
   } catch (error) {

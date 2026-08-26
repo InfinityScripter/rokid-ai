@@ -8,7 +8,7 @@ import { config } from './config.js';
 import { fsFinishLink, fsLinked, fsStartLink, isInvalidTokenError } from './fatsecret.js';
 import { writeOneEvent, undoOne, type CalendarEventInput, type UndoRef } from './events.js';
 import { bufferPush, flushWithFatSecret, type BufferedEntry } from './food-buffer.js';
-import { matchFoodItems, type FoodMatch } from './food.js';
+import { matchFoodItems, reviseFoodItems, type FoodMatch, type FoodMeal } from './food.js';
 import { formatEventLine, formatFoodCard, formatIntent } from './format.js';
 import { log, logError } from './log.js';
 import type { Intent } from './router.js';
@@ -21,9 +21,12 @@ const MEETING_AUDIO_THRESHOLD_SECONDS = 180;
 // вежливо отвечают «устарело», это осознанный компромисс.
 const undoable = new Map<string, UndoRef[]>();
 const pendingWork = new Map<string, CalendarEventInput[]>();
-export const pendingFood = new Map<string, { meal: string; matches: FoodMatch[] }>();
+export const pendingFood = new Map<string, { meal: FoodMeal; matches: FoodMatch[] }>();
 // Ключ последней записи — для голосовой команды «отмени последнюю запись».
 let lastUndoKey: string | null = null;
+// «✏️ Поправить»: следующее сообщение владельца — правка этой карточки, а не
+// новая заметка. Одна ожидающая правка на бота (владелец один).
+let pendingFoodEdit: { key: string; meal: FoodMeal; matches: FoodMatch[] } | null = null;
 
 export type IntentReply = { text: string; keyboard?: InlineKeyboard };
 
@@ -88,18 +91,40 @@ async function showAgenda(from: string, to: string, title: string): Promise<Inte
   return { text: [`📅 ${title} (личный календарь):`, ...lines].join('\n') };
 }
 
+function buildFoodCard(meal: FoodMeal, matches: FoodMatch[]): IntentReply {
+  const key = randomUUID();
+  pendingFood.set(key, { meal, matches });
+  const keyboard = new InlineKeyboard()
+    .text('✅ Записать', `food-yes:${key}`)
+    .text('✏️ Поправить', `food-edit:${key}`)
+    .text('❌ Не надо', `food-no:${key}`);
+  return { text: formatFoodCard(meal, matches), keyboard };
+}
+
 async function showFoodCard(
-  meal: 'breakfast' | 'lunch' | 'dinner' | 'other',
+  meal: FoodMeal,
   items: { name: string; amount: string; query: string }[],
 ): Promise<IntentReply> {
   if (!fsLinked()) {
     return { text: 'Сначала привяжи аккаунт: /fatsecret_link' };
   }
   const matches = await matchFoodItems(items);
-  const key = randomUUID();
-  pendingFood.set(key, { meal, matches });
-  const keyboard = new InlineKeyboard().text('✅ Записать', `food-yes:${key}`).text('❌ Не надо', `food-no:${key}`);
-  return { text: formatFoodCard(meal, matches), keyboard };
+  return buildFoodCard(meal, matches);
+}
+
+// Ожидающая правка перехватывает сообщение до роутера: пересобираем карточку
+// по фразе и заменяем старую (её ключ гасим, чтобы старые кнопки не жили).
+async function maybeApplyFoodEdit(text: string): Promise<IntentReply | null> {
+  const edit = pendingFoodEdit;
+  if (!edit) return null;
+  pendingFoodEdit = null;
+  pendingFood.delete(edit.key);
+  const items = await reviseFoodItems(edit.matches, text);
+  if (items.length === 0) {
+    return { text: '❌ Ок, убрала всё — карточку закрыла.' };
+  }
+  const matches = await matchFoodItems(items);
+  return buildFoodCard(edit.meal, matches);
 }
 
 export async function applyIntent(intent: Intent): Promise<IntentReply> {
@@ -199,6 +224,7 @@ bot.callbackQuery(/^food-yes:(.+)$/, async (ctx) => {
     return;
   }
   pendingFood.delete(ctx.match[1]);
+  if (pendingFoodEdit?.key === ctx.match[1]) pendingFoodEdit = null;
   await ctx.answerCallbackQuery({ text: 'Записываю…' });
 
   const entries: BufferedEntry[] = [];
@@ -239,8 +265,20 @@ bot.callbackQuery(/^food-yes:(.+)$/, async (ctx) => {
 
 bot.callbackQuery(/^food-no:(.+)$/, async (ctx) => {
   const existed = pendingFood.delete(ctx.match[1]);
+  if (pendingFoodEdit?.key === ctx.match[1]) pendingFoodEdit = null;
   await ctx.answerCallbackQuery({ text: existed ? 'Ок, не записываю' : 'Эта карточка устарела' });
   if (existed) await ctx.reply('❌ Еду не записала.');
+});
+
+bot.callbackQuery(/^food-edit:(.+)$/, async (ctx) => {
+  const pending = pendingFood.get(ctx.match[1]);
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: 'Эта карточка устарела (возможно, бот перезапускался)' });
+    return;
+  }
+  pendingFoodEdit = { key: ctx.match[1], meal: pending.meal, matches: pending.matches };
+  await ctx.answerCallbackQuery({ text: 'Жду поправку' });
+  await ctx.reply('✏️ Пришли поправку текстом или голосом: «борщ 400 грамм, тосты убери».');
 });
 
 async function downloadTelegramFile(fileId: string): Promise<{ buffer: Buffer; remotePath: string }> {
@@ -311,6 +349,11 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
         await ctx.reply('Не удалось разобрать речь — запись пустая или слишком шумная.');
         return;
       }
+      const edited = await maybeApplyFoodEdit(text);
+      if (edited) {
+        await ctx.reply(`Расшифровка: «${text}»\n\n${edited.text}`, { reply_markup: edited.keyboard });
+        return;
+      }
       const intent = await routeText(text, new Date());
       log('intent:', JSON.stringify(intent));
       const reply = await applyIntent(intent);
@@ -341,6 +384,11 @@ bot.on('message:photo', async (ctx) => {
 
 bot.on('message:text', async (ctx) => {
   try {
+    const edited = await maybeApplyFoodEdit(ctx.message.text);
+    if (edited) {
+      await ctx.reply(edited.text, { reply_markup: edited.keyboard });
+      return;
+    }
     const intent = await routeText(ctx.message.text, new Date());
     log('intent:', JSON.stringify(intent));
     const reply = await applyIntent(intent);

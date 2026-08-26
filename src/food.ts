@@ -12,6 +12,8 @@ const client = new OpenAI({
 
 export type FoodItem = { name: string; amount: string; query: string };
 
+export type FoodMeal = 'breakfast' | 'lunch' | 'dinner' | 'other';
+
 export type FoodMatch = {
   name: string;
   amount: string;
@@ -127,6 +129,73 @@ function sanitizeUnits(units: number): number {
 
 function sanitizeGrams(grams: number | null): number | null {
   return grams !== null && Number.isFinite(grams) && grams > 0 ? grams : null;
+}
+
+const reviseSchema = z.object({
+  items: z.array(z.object({ name: z.string(), amount: z.string(), query: z.string() })),
+});
+
+const reviseTool: OpenAI.Chat.Completions.ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'revise_food_items',
+    description: 'Пересобрать список продуктов карточки еды по поправке пользователя',
+    parameters: {
+      type: 'object',
+      properties: {
+        items: {
+          type: 'array',
+          description: 'ПОЛНЫЙ новый список продуктов после поправки',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              amount: { type: 'string', description: 'порция словами: «400 г», «2 шт»' },
+              query: { type: 'string', description: 'название продукта по-английски для поиска в базе' },
+            },
+            required: ['name', 'amount', 'query'],
+          },
+        },
+      },
+      required: ['items'],
+    },
+  },
+};
+
+// «✏️ Поправить»: пересборка списка по свободной фразе («борщ 400, тосты
+// убери»). Модель возвращает ПОЛНЫЙ новый список — одна фраза может менять
+// порции, убирать и добавлять позиции одновременно; пустой список = «убери
+// всё», вызывающий код закрывает карточку.
+export async function reviseFoodItems(current: FoodMatch[], correction: string): Promise<FoodItem[]> {
+  const card = current.map((m) => ({
+    name: m.name,
+    amount: m.amount,
+    matched: m.food?.foodName ?? null,
+    grams: m.grams,
+  }));
+  const response = await client.chat.completions.create({
+    model: config.ROUTER_MODEL,
+    max_tokens: 1024,
+    tools: [reviseTool],
+    tool_choice: { type: 'function', function: { name: 'revise_food_items' } },
+    messages: [
+      {
+        role: 'user',
+        content:
+          `Карточка еды сейчас:\n${JSON.stringify(card, null, 2)}\n\n` +
+          `Поправка пользователя: «${correction}»\n\n` +
+          'Верни ПОЛНЫЙ новый список items после поправки: позиции без изменений оставь как есть, ' +
+          '«убери X» — исключи позицию, «X 400 грамм» — поменяй amount этой позиции, новые продукты ' +
+          'добавь. Если поправка убирает всё — верни пустой список. Для каждого продукта заполни query — ' +
+          'короткое английское название для поиска в американской базе («борщ» → "borscht").',
+      },
+    ],
+  });
+  const toolCall = response.choices[0]?.message.tool_calls?.[0];
+  if (!toolCall || toolCall.type !== 'function') {
+    throw new Error('Модель не вернула структурированный ответ пересборки карточки');
+  }
+  return reviseSchema.parse(JSON.parse(toolCall.function.arguments)).items;
 }
 
 export type MatchFoodDeps = {

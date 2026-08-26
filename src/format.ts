@@ -1,4 +1,4 @@
-import type { FoodMatch } from './food.js';
+import type { FoodMatch, FoodMeal } from './food.js';
 import type { Intent } from './router.js';
 
 type CalendarEventFields = {
@@ -22,7 +22,7 @@ export function formatEventLine(event: CalendarEventFields): string {
   return `«${event.title}» — ${when}, ${event.durationMinutes} мин (${calendar})${place}`;
 }
 
-export function formatFoodCard(meal: 'breakfast' | 'lunch' | 'dinner' | 'other', matches: FoodMatch[]): string {
+export function formatFoodCard(meal: FoodMeal, matches: FoodMatch[]): string {
   const meals = { breakfast: 'завтрак', lunch: 'обед', dinner: 'ужин', other: 'перекус' };
   const lines = matches.map((m) =>
     m.food
