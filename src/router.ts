@@ -175,7 +175,11 @@ export async function routeText(text: string, now: Date): Promise<Intent> {
   ]);
 }
 
-export async function parseFoodPhoto(imageBase64: string, mediaType: 'image/jpeg' | 'image/png'): Promise<Intent> {
+export async function parseFoodPhoto(
+  imageBase64: string,
+  mediaType: 'image/jpeg' | 'image/png',
+  caption?: string,
+): Promise<Intent> {
   return callRouter([
     { type: 'image_url', image_url: { url: `data:${mediaType};base64,${imageBase64}` } },
     {
@@ -189,7 +193,11 @@ export async function parseFoodPhoto(imageBase64: string, mediaType: 'image/jpeg
         'Приём пищи выбери по текущему времени в Москве: до 11 — breakfast, 11–16 — lunch, ' +
         '16–22 — dinner, иначе other. Порции оценивай консервативно, словами. ' +
         'Для каждого продукта заполни query — короткое английское название для поиска в американской базе ' +
-        'продуктов («борщ» → "borscht", «два тоста с сыром» → "toast with cheese").',
+        'продуктов («борщ» → "borscht", «два тоста с сыром» → "toast with cheese").' +
+        (caption
+          ? `\nГолосовая подпись к фото: «${caption}» — учитывай её при выборе блюд, порций и приёма пищи; ` +
+            'подпись главнее твоей оценки по фото.'
+          : ''),
     },
   ]);
 }
