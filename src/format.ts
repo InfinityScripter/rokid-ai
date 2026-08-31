@@ -57,7 +57,7 @@ export function formatIntent(intent: Intent): string {
         'Пришли саму запись голосовым или аудиофайлом (длиннее 3 минут) — сделаю саммари.'
       );
     case 'note':
-      return [`📝 Заметка: ${intent.text}`, ...skippedLine(intent.skipped)].join('\n');
+      return [`📝 Записала заметку: ${intent.text}\nПоследние — /notes`, ...skippedLine(intent.skipped)].join('\n');
     // Обычно перехватываются в applyIntent до форматирования.
     case 'cancel_last':
       return '↩️ Отменяю последнюю запись…';

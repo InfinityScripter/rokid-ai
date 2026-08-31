@@ -12,6 +12,7 @@ import { matchFoodItems, reviseFoodItems, type FoodMatch, type FoodMeal } from '
 import { formatEventLine, formatFoodCard, formatIntent } from './format.js';
 import { log, logError } from './log.js';
 import { splitTranscript, summarizeMeeting, transcribeLong } from './meeting.js';
+import { addNote, listNotes } from './notes.js';
 import type { Intent } from './router.js';
 import { parseFoodPhoto, routeText } from './router.js';
 import { tmpAudioPath, transcribe } from './stt.js';
@@ -137,6 +138,10 @@ export async function applyIntent(intent: Intent): Promise<IntentReply> {
   }
   if (intent.intent === 'food_log') {
     return showFoodCard(intent.meal, intent.items);
+  }
+  if (intent.intent === 'note') {
+    addNote(intent.text);
+    return { text: formatIntent(intent) };
   }
   if (intent.intent !== 'calendar_event' || intent.uncertain.length > 0) {
     return { text: formatIntent(intent) };
@@ -298,6 +303,25 @@ bot.command('start', async (ctx) => {
       '📷 Фото еды → определю блюда и порции\n' +
       '✍️ Текст → то же, что и голосовое',
   );
+});
+
+bot.command('notes', async (ctx) => {
+  const notes = listNotes(10);
+  if (notes.length === 0) {
+    await ctx.reply('Заметок пока нет — пришли текст или голосовое, всё, что не встреча и не еда, запишу сюда.');
+    return;
+  }
+  const lines = notes.map((note) => {
+    const when = new Date(note.at).toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    return `• ${when} — ${note.text}`;
+  });
+  await ctx.reply(`📝 Последние заметки:\n${lines.join('\n')}`);
 });
 
 bot.command('fatsecret_link', async (ctx) => {
