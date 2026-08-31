@@ -11,6 +11,8 @@ import { bufferPush, flushWithFatSecret, type BufferedEntry } from './food-buffe
 import { matchFoodItems, reviseFoodItems, type FoodMatch, type FoodMeal } from './food.js';
 import { formatEventLine, formatFoodCard, formatIntent } from './format.js';
 import { log, logError } from './log.js';
+import { splitTranscript, summarizeMeeting, transcribeLong } from './meeting.js';
+import { addNote, listNotes } from './notes.js';
 import type { Intent } from './router.js';
 import { parseFoodPhoto, routeText } from './router.js';
 import { tmpAudioPath, transcribe } from './stt.js';
@@ -136,6 +138,10 @@ export async function applyIntent(intent: Intent): Promise<IntentReply> {
   }
   if (intent.intent === 'food_log') {
     return showFoodCard(intent.meal, intent.items);
+  }
+  if (intent.intent === 'note') {
+    addNote(intent.text);
+    return { text: formatIntent(intent) };
   }
   if (intent.intent !== 'calendar_event' || intent.uncertain.length > 0) {
     return { text: formatIntent(intent) };
@@ -299,6 +305,25 @@ bot.command('start', async (ctx) => {
   );
 });
 
+bot.command('notes', async (ctx) => {
+  const notes = listNotes(10);
+  if (notes.length === 0) {
+    await ctx.reply('Заметок пока нет — пришли текст или голосовое, всё, что не встреча и не еда, запишу сюда.');
+    return;
+  }
+  const lines = notes.map((note) => {
+    const when = new Date(note.at).toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    return `• ${when} — ${note.text}`;
+  });
+  await ctx.reply(`📝 Последние заметки:\n${lines.join('\n')}`);
+});
+
 bot.command('fatsecret_link', async (ctx) => {
   try {
     const { authorizeUrl } = await fsStartLink();
@@ -326,14 +351,48 @@ bot.command('fatsecret_pin', async (ctx) => {
   }
 });
 
+// Запись длиннее порога — встреча: расшифровка частями и саммари вместо
+// разбора намерения.
+async function handleMeetingAudio(
+  ctx: { reply: (text: string) => Promise<unknown> },
+  media: { file_id: string; file_unique_id: string; duration?: number },
+): Promise<void> {
+  const minutes = Math.max(1, Math.round((media.duration ?? 0) / 60));
+  await ctx.reply(`🎙 Запись на ${minutes} мин — делаю саммари встречи, это займёт несколько минут…`);
+  try {
+    const { buffer, remotePath } = await downloadTelegramFile(media.file_id);
+    const audioPath = tmpAudioPath(media.file_unique_id, remotePath);
+    await writeFile(audioPath, buffer);
+    try {
+      const transcript = await transcribeLong(audioPath);
+      if (!transcript) {
+        await ctx.reply('Не удалось разобрать запись — она пустая или слишком шумная.');
+        return;
+      }
+      const summary = await summarizeMeeting(transcript);
+      // Лимит сообщения Telegram — 4096 символов: длинное саммари шлём частями.
+      for (const part of splitTranscript(summary, 4000)) {
+        await ctx.reply(part);
+      }
+    } finally {
+      await rm(audioPath, { force: true });
+    }
+  } catch (error) {
+    logError('meeting', error);
+    const message = error instanceof Error ? error.message : String(error);
+    await ctx.reply(
+      message.includes('file is too big')
+        ? 'Файл больше 20 МБ — это лимит Telegram для ботов. Ужми запись (mp3 48 кбит/с — ~3 часа в 20 МБ) и пришли ещё раз.'
+        : `Ошибка саммари: ${message}`,
+    );
+  }
+}
+
 bot.on(['message:voice', 'message:audio'], async (ctx) => {
   const media = ctx.message.voice ?? ctx.message.audio;
   if (!media) return;
   if ((media.duration ?? 0) > MEETING_AUDIO_THRESHOLD_SECONDS) {
-    await ctx.reply(
-      '🎙 Запись длиннее 3 минут — похоже на запись встречи. ' +
-        'Конвейер саммари подключим на этапе 5, пока такие записи не обрабатываю.',
-    );
+    await handleMeetingAudio(ctx, media);
     return;
   }
   await ctx.reply('Слушаю…');

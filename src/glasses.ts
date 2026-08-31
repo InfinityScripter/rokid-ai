@@ -102,6 +102,7 @@ export async function handleGlassesChat(req: IncomingMessage, res: ServerRespons
   const audioPath = path.join('/tmp', `rokid-glasses-${randomUUID()}.wav`);
   try {
     await writeFile(audioPath, upload.audio);
+    send({ type: 'status', text: 'Распознаю…' });
     const text = await transcribe(audioPath);
     // С фото пустая расшифровка не беда: снимок сам по себе полноценная
     // заметка о еде, голос — лишь необязательная подпись к нему.

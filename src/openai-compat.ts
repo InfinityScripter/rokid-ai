@@ -29,9 +29,22 @@ function textOf(message: ChatMessage | undefined): string {
   return '';
 }
 
+const MAX_BODY_BYTES = 1024 * 1024;
+
 export async function handleChatCompletions(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let received = 0;
+  for await (const chunk of req) {
+    received += (chunk as Buffer).length;
+    // Текстовый chat/completions в мегабайт не упирается; всё крупнее —
+    // не наш клиент, обрываем до того, как соберём это в память.
+    if (received > MAX_BODY_BYTES) {
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'body too large', type: 'invalid_request_error' } }));
+      return;
+    }
+    chunks.push(chunk as Buffer);
+  }
   const raw = Buffer.concat(chunks).toString();
   log('openai-compat raw:', raw.slice(0, 500));
   const body = JSON.parse(raw) as ChatRequest;

@@ -12,6 +12,9 @@ HOST="$VPS_USER@$VPS_HOST"
 echo "→ проверка типов"
 npm run --silent ts
 
+echo "→ тесты"
+npm test --silent
+
 echo "→ копирую src/ и манифесты на VDS"
 rsync -rtc --delete -e "ssh -p $PORT" src/ "$HOST:/opt/rokid-ai/src/"
 rsync -rtc -e "ssh -p $PORT" package.json package-lock.json "$HOST:/opt/rokid-ai/"
