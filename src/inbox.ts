@@ -37,6 +37,13 @@ const visionReportSchema = z.object({
 
 function rateLimited(ip: string): boolean {
   const now = Date.now();
+  // Записи чистятся только при повторном запросе с того же IP — без общей
+  // уборки карта росла бы бесконечно на случайных сканерах интернета.
+  if (requestTimestampsByIp.size > 500) {
+    for (const [key, stamps] of requestTimestampsByIp) {
+      if (stamps.every((t) => now - t >= RATE_LIMIT_WINDOW_MS)) requestTimestampsByIp.delete(key);
+    }
+  }
   const timestamps = (requestTimestampsByIp.get(ip) ?? []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
   timestamps.push(now);
   requestTimestampsByIp.set(ip, timestamps);
@@ -56,6 +63,22 @@ export function startInboxServer(): void {
     const respond = (status: number, body: unknown) => {
       res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(body));
+    };
+
+    // Общий ограничитель тела: null — уже ответили 413. Без лимита гигантское
+    // тело собиралось бы в память целиком и роняло VDS с одним гигабайтом.
+    const readBody = async (): Promise<Buffer | null> => {
+      const chunks: Buffer[] = [];
+      let received = 0;
+      for await (const chunk of req) {
+        received += (chunk as Buffer).length;
+        if (received > MAX_BODY_BYTES) {
+          respond(413, { message: 'body too large' });
+          return null;
+        }
+        chunks.push(chunk as Buffer);
+      }
+      return Buffer.concat(chunks);
     };
 
     const route = req.url?.split('?')[0];
@@ -85,8 +108,8 @@ export function startInboxServer(): void {
     // распознанный ей текст; ответ — SSE-события message/error + done.
     // Контракт снят с github.com/Hylouis233/rokid-hermes-connector.
     if (req.method === 'POST' && route === '/sse') {
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(chunk as Buffer);
+      const rawBody = await readBody();
+      if (rawBody === null) return;
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache',
@@ -96,7 +119,7 @@ export function startInboxServer(): void {
         if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
       };
       try {
-        const raw = Buffer.concat(chunks).toString();
+        const raw = rawBody.toString();
         log('aiui-agent raw:', raw.slice(0, 500));
         const body = JSON.parse(raw) as Record<string, unknown>;
         const text = String(body.text ?? body.content ?? body.query ?? body.input ?? '').trim();
@@ -194,17 +217,8 @@ export function startInboxServer(): void {
       return;
     }
 
-    const chunks: Buffer[] = [];
-    let received = 0;
-    for await (const chunk of req) {
-      received += (chunk as Buffer).length;
-      if (received > MAX_BODY_BYTES) {
-        respond(413, { message: 'body too large' });
-        return;
-      }
-      chunks.push(chunk as Buffer);
-    }
-    const body = Buffer.concat(chunks);
+    const body = await readBody();
+    if (body === null) return;
 
     if (req.method === 'POST' && route === '/bridge/complete') {
       try {
