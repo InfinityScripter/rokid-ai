@@ -158,7 +158,11 @@ async function getOauth2Token(): Promise<string> {
   const res = await fetch('https://oauth.fatsecret.com/connect/token', {
     method: 'POST',
     headers: { Authorization: `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'grant_type=client_credentials&scope=basic',
+    // Без параметра scope FatSecret выдаёт ВСЕ скоупы, доступные приложению
+    // (см. доки OAuth2): один кэшируемый токен покрывает и поиск (basic), и
+    // штрихкоды (barcode). Явный scope=basic отрезал barcode и ронял
+    // food.find_id_for_barcode ошибкой «14 Missing scope».
+    body: 'grant_type=client_credentials',
   });
   if (!res.ok) throw new Error(`FatSecret не выдал токен: HTTP ${res.status} ${await res.text()}`);
   const data = (await res.json()) as { access_token: string; expires_in: number };

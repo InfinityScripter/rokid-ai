@@ -432,7 +432,10 @@ bot.on('message:photo', async (ctx) => {
     const sizes = ctx.message.photo;
     const largest = sizes[sizes.length - 1];
     const { buffer } = await downloadTelegramFile(largest.file_id);
-    const intent = await parseFoodPhoto(buffer.toString('base64'), 'image/jpeg');
+    // Подпись к фото («творожные сливки 320 грамм») — самый надёжный сигнал:
+    // без неё модель гадает по снимку, часто тёмному ракурсу этикетки.
+    const caption = ctx.message.caption?.trim();
+    const intent = await parseFoodPhoto(buffer.toString('base64'), 'image/jpeg', caption || undefined);
     const reply = await applyIntent(intent);
     await ctx.reply(reply.text, { reply_markup: reply.keyboard });
   } catch (error) {
