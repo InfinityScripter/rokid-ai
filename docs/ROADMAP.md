@@ -47,6 +47,10 @@
   проходят на чистой машине (22 теста, включая новые на `analyzeVision`).
 - [x] Минимальный CI (GitHub Actions): `tsc --noEmit` + `npm test` на push
   в main и на pull request (`.github/workflows/ci.yml`).
+- [ ] Автодеплой из GitHub Actions при мерже в main
+  (`.github/workflows/deploy.yml`) — workflow готов, **владельцу добавить
+  секреты** `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` (+`VPS_PORT`); до этого
+  шаги деплоя пропускаются.
 - [x] Судьба `PLAN.md`/`etap-0.md`: этот файл — официальная замена, README
   больше на них не ссылается (они остаются локальными файлами владельца).
   Добавлен `CLAUDE.md` — карта кода и конвенции для агентских сессий,

@@ -9,8 +9,10 @@
 - `npm test` — тесты (node:test, работают без секретов: `src/test-env.ts`).
 - `npm run ts` — typecheck (`tsc --noEmit`, strict).
 - `npm start` / `npm run dev` — запуск бота (нужен `~/.config/rokid-ai/.env`).
-- Деплой на VDS — ТОЛЬКО `./deploy/bot.sh` (запускается с машины владельца,
-  из агентской сессии недоступен: нужны SSH-реквизиты).
+- Деплой на VDS — автоматически GitHub Actions `Deploy` при мерже в `main`
+  (нужны секреты VPS_HOST/VPS_USER/VPS_SSH_KEY в репо) или вручную
+  `./deploy/bot.sh` с машины владельца. Из агентской сессии по SSH — нельзя,
+  поэтому «задеплоить» = смержить в main.
 
 ## Карта кода
 
