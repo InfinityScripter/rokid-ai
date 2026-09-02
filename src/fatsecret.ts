@@ -252,19 +252,45 @@ type RawServing = {
   carbohydrate: string;
 };
 
-export async function fsGetServings(foodId: string): Promise<FsServing[]> {
-  const data = (await fsApi({ method: 'food.get', food_id: foodId })) as {
-    food?: { servings?: { serving?: RawServing | RawServing[] } };
+type RawFood = {
+  food_id: string;
+  food_name: string;
+  brand_name?: string;
+  servings?: { serving?: RawServing | RawServing[] };
+};
+
+export async function fsGetFood(foodId: string): Promise<{ food: FsFood; servings: FsServing[] }> {
+  const data = (await fsApi({ method: 'food.get', food_id: foodId })) as { food?: RawFood };
+  const raw = data.food;
+  if (!raw) throw new Error(`FatSecret food.get: ответ без food для ${foodId}`);
+  return {
+    food: { foodId: raw.food_id, name: raw.food_name, brand: raw.brand_name ?? null, description: '' },
+    servings: asArray(raw.servings?.serving).map((s) => ({
+      servingId: s.serving_id,
+      description: s.serving_description,
+      grams: s.metric_serving_amount ? Number(s.metric_serving_amount) : null,
+      calories: Number(s.calories),
+      protein: Number(s.protein),
+      fat: Number(s.fat),
+      carbs: Number(s.carbohydrate),
+    })),
   };
-  return asArray(data.food?.servings?.serving).map((s) => ({
-    servingId: s.serving_id,
-    description: s.serving_description,
-    grams: s.metric_serving_amount ? Number(s.metric_serving_amount) : null,
-    calories: Number(s.calories),
-    protein: Number(s.protein),
-    fat: Number(s.fat),
-    carbs: Number(s.carbohydrate),
-  }));
+}
+
+export async function fsGetServings(foodId: string): Promise<FsServing[]> {
+  return (await fsGetFood(foodId)).servings;
+}
+
+// Доки: https://platform.fatsecret.com/docs/v1/food.find_id_for_barcode —
+// barcode в формате GTIN-13, ответ {food_id: {value}}; «не нашла» FatSecret
+// отдаёт нулём, а не ошибкой. Метод Premier-exclusive: без одобренного
+// Premier отвечает ошибкой прав — вызывающий код откатывается на фото.
+export async function fsFindFoodIdForBarcode(barcode: string): Promise<string | null> {
+  const data = (await fsApi({ method: 'food.find_id_for_barcode', barcode })) as {
+    food_id?: { value?: string } | string;
+  };
+  const id = typeof data.food_id === 'string' ? data.food_id : data.food_id?.value;
+  return id && id !== '0' ? id : null;
 }
 
 // Дневник FatSecret — по московскому дню, не по UTC: ужин в 00:30 МСК должен

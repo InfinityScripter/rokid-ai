@@ -101,3 +101,59 @@ test('units вне диапазона (0, отрицательные, >50) → �
   assert.equal(result.units, 1);
   assert.equal(result.calories, 50);
 });
+
+const { matchFoodByBarcode, mealByMoscowTime } = await import('./food.js');
+
+test('mealByMoscowTime: границы завтрак/обед/ужин/перекус по Москве', () => {
+  // 07:30 UTC = 10:30 МСК — ещё завтрак; 08:00 UTC = 11:00 МСК — уже обед.
+  assert.equal(mealByMoscowTime(new Date('2026-08-26T07:30:00.000Z')), 'breakfast');
+  assert.equal(mealByMoscowTime(new Date('2026-08-26T08:00:00.000Z')), 'lunch');
+  assert.equal(mealByMoscowTime(new Date('2026-08-26T13:00:00.000Z')), 'dinner');
+  // 19:30 UTC = 22:30 МСК — перекус; 21:30 UTC = 00:30 МСК — тоже.
+  assert.equal(mealByMoscowTime(new Date('2026-08-26T19:30:00.000Z')), 'other');
+  assert.equal(mealByMoscowTime(new Date('2026-08-26T21:30:00.000Z')), 'other');
+});
+
+test('matchFoodByBarcode: продукт из базы, порция из подписи через модель', async () => {
+  const result = await matchFoodByBarcode('4606605030281', 'всю банку 320 г', {
+    findFoodId: async (barcode) => (barcode === '4606605030281' ? '777' : null),
+    getFood: async () => ({
+      food: { foodId: '777', name: 'Cottage Cheese Grains', brand: 'Savushkin', description: '' },
+      servings: [serving('s100', 110)],
+    }),
+    chooseFood: async (item) => {
+      assert.equal(item.amount, 'всю банку 320 г');
+      return { foodId: '777', servingId: 's100', units: 3.2, grams: 320 };
+    },
+  });
+  assert.ok(result);
+  assert.equal(result.food?.foodId, '777');
+  assert.equal(result.name, 'Savushkin Cottage Cheese Grains');
+  assert.equal(result.units, 3.2);
+  assert.equal(result.calories, 110 * 3.2);
+});
+
+test('matchFoodByBarcode: нет в базе → null, без вызова модели', async () => {
+  let chooseCalled = false;
+  const result = await matchFoodByBarcode('5901234123457', undefined, {
+    findFoodId: async () => null,
+    getFood: async () => {
+      throw new Error('не должно вызываться');
+    },
+    chooseFood: async () => {
+      chooseCalled = true;
+      return { foodId: 'x', servingId: 'y', units: 1, grams: null };
+    },
+  });
+  assert.equal(result, null);
+  assert.equal(chooseCalled, false);
+});
+
+test('matchFoodByBarcode: ошибка API (нет прав Premier) → null, а не исключение', async () => {
+  const result = await matchFoodByBarcode('5901234123457', undefined, {
+    findFoodId: async () => {
+      throw new Error('FatSecret food.find_id_for_barcode: 14 Missing scope');
+    },
+  });
+  assert.equal(result, null);
+});

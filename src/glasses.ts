@@ -6,10 +6,10 @@ import path from 'node:path';
 
 import Busboy from 'busboy';
 
-import { applyIntent, bot } from './bot.js';
+import { applyIntent, bot, foodFromPhoto } from './bot.js';
 import { config } from './config.js';
 import { log, logError } from './log.js';
-import { parseFoodPhoto, routeText } from './router.js';
+import { routeText } from './router.js';
 import { transcribe } from './stt.js';
 
 // Ручка для приложения на очках, протокол в стиле rode (docs/glasses-protocol.md):
@@ -112,11 +112,14 @@ export async function handleGlassesChat(req: IncomingMessage, res: ServerRespons
     }
     if (text) send({ type: 'user', text });
     send({ type: 'status', text: upload.image ? 'Смотрю на фото…' : 'Думаю…' });
-    const intent = upload.image
-      ? await parseFoodPhoto(upload.image.toString('base64'), 'image/jpeg', text || undefined)
-      : await routeText(text, new Date());
-    log('glasses intent:', JSON.stringify(intent));
-    const reply = await applyIntent(intent);
+    let reply;
+    if (upload.image) {
+      reply = await foodFromPhoto(upload.image.toString('base64'), text || undefined);
+    } else {
+      const intent = await routeText(text, new Date());
+      log('glasses intent:', JSON.stringify(intent));
+      reply = await applyIntent(intent);
+    }
     send({ type: 'answer', text: reply.text });
     if (upload.recordingId) markProcessed(upload.recordingId);
     const transcriptLine = text ? `Расшифровка: «${text}»\n\n` : '';
