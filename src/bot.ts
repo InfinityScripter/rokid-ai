@@ -3,12 +3,20 @@ import { writeFile, rm } from 'node:fs/promises';
 
 import { Bot, InlineKeyboard } from 'grammy';
 
+import { readBarcodeFromPhoto } from './barcode.js';
 import { caldavListEvents } from './caldav.js';
 import { config } from './config.js';
 import { fsFinishLink, fsLinked, fsStartLink, isInvalidTokenError } from './fatsecret.js';
 import { writeOneEvent, undoOne, type CalendarEventInput, type UndoRef } from './events.js';
 import { bufferPush, flushWithFatSecret, type BufferedEntry } from './food-buffer.js';
-import { matchFoodItems, reviseFoodItems, type FoodMatch, type FoodMeal } from './food.js';
+import {
+  matchFoodByBarcode,
+  matchFoodItems,
+  mealByMoscowTime,
+  reviseFoodItems,
+  type FoodMatch,
+  type FoodMeal,
+} from './food.js';
 import { formatEventLine, formatFoodCard, formatIntent } from './format.js';
 import { log, logError } from './log.js';
 import { splitTranscript, summarizeMeeting, transcribeLong } from './meeting.js';
@@ -93,14 +101,53 @@ async function showAgenda(from: string, to: string, title: string): Promise<Inte
   return { text: [`📅 ${title} (личный календарь):`, ...lines].join('\n') };
 }
 
-function buildFoodCard(meal: FoodMeal, matches: FoodMatch[]): IntentReply {
-  const key = randomUUID();
-  pendingFood.set(key, { meal, matches });
+const MEAL_BUTTONS: { meal: FoodMeal; label: string }[] = [
+  { meal: 'breakfast', label: '🍳 Завтрак' },
+  { meal: 'lunch', label: '🍲 Обед' },
+  { meal: 'dinner', label: '🌙 Ужин' },
+  { meal: 'other', label: '🍎 Перекус' },
+];
+
+function foodCardKeyboard(key: string, meal: FoodMeal): InlineKeyboard {
   const keyboard = new InlineKeyboard()
     .text('✅ Записать', `food-yes:${key}`)
     .text('✏️ Поправить', `food-edit:${key}`)
-    .text('❌ Не надо', `food-no:${key}`);
-  return { text: formatFoodCard(meal, matches), keyboard };
+    .text('❌ Не надо', `food-no:${key}`)
+    .row();
+  for (const button of MEAL_BUTTONS) {
+    keyboard.text(button.meal === meal ? `${button.label} ✓` : button.label, `food-meal:${key}:${button.meal}`);
+  }
+  return keyboard;
+}
+
+function buildFoodCard(meal: FoodMeal, matches: FoodMatch[]): IntentReply {
+  if (matches.length === 0) {
+    return { text: 'Не разобрала еду — пришли фото с подписью, что это и сколько, или надиктуй.' };
+  }
+  const key = randomUUID();
+  pendingFood.set(key, { meal, matches });
+  return { text: formatFoodCard(meal, matches), keyboard: foodCardKeyboard(key, meal) };
+}
+
+// Фото еды: сначала штрихкод (точное попадание в базу), при любом сбое —
+// распознавание блюд по снимку. Подпись к фото идёт и туда, и туда.
+export async function foodFromPhoto(imageBase64: string, caption?: string): Promise<IntentReply> {
+  if (fsLinked()) {
+    let barcode: string | null = null;
+    try {
+      barcode = await readBarcodeFromPhoto(imageBase64, 'image/jpeg');
+    } catch (error) {
+      logError('barcode-read', error);
+    }
+    if (barcode) {
+      log('barcode:', barcode);
+      const match = await matchFoodByBarcode(barcode, caption);
+      if (match) return buildFoodCard(mealByMoscowTime(new Date()), [match]);
+      log('barcode: в FatSecret не нашла, распознаю по фото');
+    }
+  }
+  const intent = await parseFoodPhoto(imageBase64, 'image/jpeg', caption);
+  return applyIntent(intent);
 }
 
 async function showFoodCard(
@@ -276,6 +323,25 @@ bot.callbackQuery(/^food-no:(.+)$/, async (ctx) => {
   if (existed) await ctx.reply('❌ Еду не записала.');
 });
 
+bot.callbackQuery(/^food-meal:([^:]+):(breakfast|lunch|dinner|other)$/, async (ctx) => {
+  const key = ctx.match[1];
+  const meal = ctx.match[2] as FoodMeal;
+  const pending = pendingFood.get(key);
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: 'Эта карточка устарела (возможно, бот перезапускался)' });
+    return;
+  }
+  pending.meal = meal;
+  if (pendingFoodEdit?.key === key) pendingFoodEdit.meal = meal;
+  await ctx.answerCallbackQuery({ text: 'Приём пищи изменила' });
+  try {
+    await ctx.editMessageText(formatFoodCard(meal, pending.matches), { reply_markup: foodCardKeyboard(key, meal) });
+  } catch (error) {
+    // Повторное нажатие той же кнопки: Telegram отвергает правку без изменений.
+    logError('food-meal', error);
+  }
+});
+
 bot.callbackQuery(/^food-edit:(.+)$/, async (ctx) => {
   const pending = pendingFood.get(ctx.match[1]);
   if (!pending) {
@@ -435,8 +501,7 @@ bot.on('message:photo', async (ctx) => {
     // Подпись к фото («творожные сливки 320 грамм») — самый надёжный сигнал:
     // без неё модель гадает по снимку, часто тёмному ракурсу этикетки.
     const caption = ctx.message.caption?.trim();
-    const intent = await parseFoodPhoto(buffer.toString('base64'), 'image/jpeg', caption || undefined);
-    const reply = await applyIntent(intent);
+    const reply = await foodFromPhoto(buffer.toString('base64'), caption || undefined);
     await ctx.reply(reply.text, { reply_markup: reply.keyboard });
   } catch (error) {
     logError('photo', error);

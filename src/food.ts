@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { z } from 'zod';
 
 import { config } from './config.js';
-import { fsGetServings, fsSearchFoods, type FsFood, type FsServing } from './fatsecret.js';
+import { fsFindFoodIdForBarcode, fsGetFood, fsGetServings, fsSearchFoods, type FsFood, type FsServing } from './fatsecret.js';
 import { logError } from './log.js';
 
 const client = new OpenAI({
@@ -13,6 +13,19 @@ const client = new OpenAI({
 export type FoodItem = { name: string; amount: string; query: string };
 
 export type FoodMeal = 'breakfast' | 'lunch' | 'dinner' | 'other';
+
+// Те же границы, что в промпте распознавания фото: 05–11 — завтрак, 11–16 —
+// обед, 16–22 — ужин, ночь — перекус (00:30 — не «до 11», а ночной перекус).
+// Нужна там, где модель приём пищи не выбирает (карточка по штрихкоду).
+export function mealByMoscowTime(date: Date): FoodMeal {
+  // hour12:false у некоторых ICU отдаёт «24» для полуночи — ветка ночи это
+  // переживает (24 >= 22).
+  const hour = Number(date.toLocaleString('en-US', { timeZone: 'Europe/Moscow', hour: 'numeric', hour12: false }));
+  if (hour >= 22 || hour < 5) return 'other';
+  if (hour < 11) return 'breakfast';
+  if (hour < 16) return 'lunch';
+  return 'dinner';
+}
 
 export type FoodMatch = {
   name: string;
@@ -234,25 +247,67 @@ export async function matchFoodItems(items: FoodItem[], deps: MatchFoodDeps = {}
         continue;
       }
 
-      const choice = await chooseFood(item, candidates);
-      const { food, serving } = pickValidPair(choice, candidates);
-      const units = sanitizeUnits(choice.units);
-      const grams = sanitizeGrams(choice.grams);
-
-      results.push({
-        name: item.name,
-        amount: item.amount,
-        food: { foodId: food.foodId, foodName: food.name },
-        servingId: serving.servingId,
-        units,
-        grams,
-        calories: serving.calories * units,
-        note: null,
-      });
+      results.push(await matchAmongCandidates(item, candidates, chooseFood));
     } catch (error) {
       logError('food-match', error);
       results.push(notFound(item, 'ошибка подбора — попробуй ещё раз'));
     }
   }
   return results;
+}
+
+async function matchAmongCandidates(
+  item: FoodItem,
+  candidates: CandidateWithServings[],
+  chooseFood: NonNullable<MatchFoodDeps['chooseFood']>,
+): Promise<FoodMatch> {
+  const choice = await chooseFood(item, candidates);
+  const { food, serving } = pickValidPair(choice, candidates);
+  const units = sanitizeUnits(choice.units);
+  const grams = sanitizeGrams(choice.grams);
+  return {
+    name: item.name,
+    amount: item.amount,
+    food: { foodId: food.foodId, foodName: food.name },
+    servingId: serving.servingId,
+    units,
+    grams,
+    calories: serving.calories * units,
+    note: null,
+  };
+}
+
+export type BarcodeDeps = {
+  findFoodId?: (barcode: string) => Promise<string | null>;
+  getFood?: (foodId: string) => Promise<{ food: FsFood; servings: FsServing[] }>;
+  chooseFood?: MatchFoodDeps['chooseFood'];
+};
+
+// Продукт по штрихкоду: точное попадание в базу вместо поиска по названию.
+// Порцию всё равно выбирает модель — из подписи («всю банку 320 г»). Любой
+// сбой (нет в базе, нет прав Premier на barcode-API, сеть) — null: вызывающий
+// код откатывается на распознавание по фото, пользователь ошибки не видит.
+export async function matchFoodByBarcode(
+  barcode: string,
+  caption: string | undefined,
+  deps: BarcodeDeps = {},
+): Promise<FoodMatch | null> {
+  const findFoodId = deps.findFoodId ?? fsFindFoodIdForBarcode;
+  const getFood = deps.getFood ?? fsGetFood;
+  const chooseFood = deps.chooseFood ?? chooseFoodAndServing;
+  try {
+    const foodId = await findFoodId(barcode);
+    if (!foodId) return null;
+    const candidate = await getFood(foodId);
+    if (candidate.servings.length === 0) return null;
+    const item: FoodItem = {
+      name: candidate.food.brand ? `${candidate.food.brand} ${candidate.food.name}` : candidate.food.name,
+      amount: caption?.trim() || '1 порция',
+      query: candidate.food.name,
+    };
+    return await matchAmongCandidates(item, [candidate], chooseFood);
+  } catch (error) {
+    logError('food-barcode', error);
+    return null;
+  }
 }

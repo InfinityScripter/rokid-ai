@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
-import { applyIntent, bot } from './bot.js';
+import { applyIntent, bot, foodFromPhoto } from './bot.js';
 import { caldavListEvents } from './caldav.js';
 import { config } from './config.js';
 import { formatEventLine } from './format.js';
@@ -12,7 +12,7 @@ import { handleGlassesChat } from './glasses.js';
 import { handleChatCompletions } from './openai-compat.js';
 import { log, logError } from './log.js';
 import { completeJob, getJob, pendingJobs, type CreatePayload } from './queue.js';
-import { parseFoodPhoto, routeText } from './router.js';
+import { routeText } from './router.js';
 import { transcribe } from './stt.js';
 import { analyzeVision, loadProfile, saveProfile, ZONES } from './vision.js';
 
@@ -283,8 +283,7 @@ export function startInboxServer(): void {
           await rm(audioPath, { force: true });
         }
       } else {
-        const intent = await parseFoodPhoto(body.toString('base64'), 'image/jpeg');
-        const r = await applyIntent(intent);
+        const r = await foodFromPhoto(body.toString('base64'));
         reply = r.text;
         keyboard = r.keyboard;
       }
