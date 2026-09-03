@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { z } from 'zod';
 
 import { config } from './config.js';
-import { lookupOpenFoodFacts, type OffProduct } from './barcode.js';
+import { lookupOpenFoodFacts, regionFromBarcode, type OffProduct } from './barcode.js';
 import {
   fsFindFoodIdForBarcode,
   fsGetFood,
@@ -343,19 +343,35 @@ export type BarcodeOutcome =
   | { kind: 'openfoodfacts'; match: FoodMatch; product: OffProduct; fatsecretNote?: string }
   | { kind: 'not_found'; fatsecretNote?: string };
 
-const FATSECRET_RU: FsRegion = { region: 'RU', language: 'ru' };
+// Домашний регион: импортный товар продаётся здесь, и в базе FatSecret RU
+// он может быть, даже если код зарегистрирован в другой стране.
+const HOME_REGION = 'RU';
+const REGION_LANGUAGE: Record<string, string> = { RU: 'ru', BY: 'ru', KZ: 'ru' };
 
-// Сначала российская база (region=RU), при отказе по скоупу локализации —
-// база по умолчанию (US). Ошибка прав на сам barcode-метод — в заметку.
+function fsRegion(region: string): FsRegion {
+  const language = REGION_LANGUAGE[region];
+  return language ? { region, language } : { region };
+}
+
+// Регион у FatSecret — один на запрос, «по всем странам» API не умеет.
+// Порядок: страна из префикса штрихкода → домашний регион → база по
+// умолчанию (US). Отказ по правам на первом же регионе (скоуп localization
+// или сам barcode-метод — функция Premier) — сразу к базе по умолчанию:
+// остальным регионам откажут так же. Прочие ошибки региона (FatSecret его
+// не поддерживает) — следующий по списку.
 async function findInFatSecret(
   barcode: string,
   findFoodId: NonNullable<BarcodeDeps['findFoodId']>,
 ): Promise<{ foodId: string | null; note?: string }> {
-  try {
-    return { foodId: await findFoodId(barcode, FATSECRET_RU) };
-  } catch (error) {
-    if (!isPermissionError(error)) throw error;
-    logError('food-barcode-ru', error);
+  const regions = [...new Set([regionFromBarcode(barcode), HOME_REGION])].filter((r): r is string => r !== null);
+  for (const region of regions) {
+    try {
+      const foodId = await findFoodId(barcode, fsRegion(region));
+      if (foodId) return { foodId };
+    } catch (error) {
+      logError(`food-barcode-${region.toLowerCase()}`, error);
+      if (isPermissionError(error)) break;
+    }
   }
   try {
     return { foodId: await findFoodId(barcode) };

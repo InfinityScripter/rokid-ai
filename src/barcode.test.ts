@@ -5,7 +5,7 @@ import { test } from 'node:test';
 // без этих переменных завершает процесс.
 import './test-env.js';
 
-const { normalizeBarcode } = await import('./barcode.js');
+const { normalizeBarcode, regionFromBarcode } = await import('./barcode.js');
 
 test('EAN-13 с верной контрольной цифрой проходит как есть', () => {
   assert.equal(normalizeBarcode('5901234123457'), '5901234123457');
@@ -34,6 +34,18 @@ test('не штрихкодовая длина и «none» → null', () => {
 });
 
 const { hasBarcodeKeyword, parseBarcodeText, parseOffProduct, stripBarcodeKeyword } = await import('./barcode.js');
+
+test('regionFromBarcode: страна по префиксу GS1 — RU, PL, DE, US (UPC-A), EAN-8 с нулями; служебные → null', () => {
+  assert.equal(regionFromBarcode('4600605030288'), 'RU');
+  assert.equal(regionFromBarcode('5901234123457'), 'PL');
+  assert.equal(regionFromBarcode('4006381333931'), 'DE');
+  assert.equal(regionFromBarcode('0012345678905'), 'US');
+  // EAN-8 «46012340», дополненный до 13: префикс читается после пяти нулей.
+  assert.equal(regionFromBarcode('0000046012340'), 'RU');
+  // 2xx — внутренние коды магазина, 978 — ISBN: страны нет.
+  assert.equal(regionFromBarcode('2001234567893'), null);
+  assert.equal(regionFromBarcode('9785170000000'), null);
+});
 
 test('parseBarcodeText: «штрихкод …», голые цифры, хвост — подпись', () => {
   assert.deepEqual(parseBarcodeText('штрихкод 5901234123457'), { code: '5901234123457', caption: undefined });
