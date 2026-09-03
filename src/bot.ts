@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { writeFile, rm } from 'node:fs/promises';
 
-import { Bot, InlineKeyboard, Keyboard } from 'grammy';
+import { Bot, InlineKeyboard, Keyboard, type Context } from 'grammy';
 
 import {
   hasBarcodeKeyword,
@@ -27,24 +27,23 @@ import { formatEventLine, formatFoodCard, formatIntent } from './format.js';
 import { log, logError } from './log.js';
 import { splitTranscript, summarizeMeeting, transcribeLong } from './meeting.js';
 import { addNote, listNotes } from './notes.js';
+import { PendingState } from './pending.js';
 import type { Intent } from './router.js';
 import { parseFoodPhoto, routeText } from './router.js';
 import { tmpAudioPath, transcribe } from './stt.js';
 
 const MEETING_AUDIO_THRESHOLD_SECONDS = 180;
 
-// Состояние кнопок живёт в памяти: после перезапуска бота старые кнопки
-// вежливо отвечают «устарело», это осознанный компромисс.
+// Кнопки календаря живут в памяти: после перезапуска бота отвечают
+// «устарело», это осознанный компромисс. Карточки еды, ожидающая правка
+// («✏️ Поправить»: следующее сообщение — правка, а не заметка) и режим
+// «штрихкод» — на диске (pending.ts): деплой перезапускает бота на каждый
+// мерж, и «✅ Записать» на карточке минутной давности не должно молча умирать.
 const undoable = new Map<string, UndoRef[]>();
 const pendingWork = new Map<string, CalendarEventInput[]>();
-export const pendingFood = new Map<string, { meal: FoodMeal; matches: FoodMatch[] }>();
+const state = new PendingState(config.SQLITE_PATH.replace(/\.sqlite$/, '.pending.json'));
 // Ключ последней записи — для голосовой команды «отмени последнюю запись».
 let lastUndoKey: string | null = null;
-// «✏️ Поправить»: следующее сообщение владельца — правка этой карточки, а не
-// новая заметка. Одна ожидающая правка на бота (владелец один).
-let pendingFoodEdit: { key: string; meal: FoodMeal; matches: FoodMatch[] } | null = null;
-// /barcode без цифр: следующее фото разбирается только по штрихкоду.
-let barcodeModeArmed = false;
 
 // Постоянная клавиатура под полем ввода — выбор режима одним тапом вместо
 // команды. Тексты кнопок перехватываются до роутера (см. message:text).
@@ -54,7 +53,7 @@ const BUTTON_NOTES = '📝 Заметки';
 const MAIN_KEYBOARD = new Keyboard().text(BUTTON_BARCODE).text(BUTTON_PHOTO).row().text(BUTTON_NOTES).resized().persistent();
 
 function armBarcodeMode(): string {
-  barcodeModeArmed = true;
+  state.setBarcodeArmed(true);
   return (
     '🔎 Жду фото штрихкода — следующий снимок разберу только по нему, без угадывания. ' +
     'Или сразу цифрами: /barcode 4600605030288 всю банку'
@@ -161,13 +160,27 @@ function foodCardKeyboard(key: string, meal: FoodMeal): InlineKeyboard {
   return keyboard;
 }
 
-function buildFoodCard(meal: FoodMeal, matches: FoodMatch[]): IntentReply {
+// header — строка «🔎 Штрихкод …» над карточкой; хранится вместе с ней,
+// чтобы не пропадать при перерисовке (смена приёма пищи).
+function cardText(meal: FoodMeal, matches: FoodMatch[], header?: string): string {
+  const body = formatFoodCard(meal, matches);
+  return header ? `${header}\n\n${body}` : body;
+}
+
+function buildFoodCard(meal: FoodMeal, matches: FoodMatch[], header?: string): IntentReply {
   if (matches.length === 0) {
     return { text: 'Не разобрала еду — пришли фото с подписью, что это и сколько, или надиктуй.' };
   }
   const key = randomUUID();
-  pendingFood.set(key, { meal, matches });
-  return { text: formatFoodCard(meal, matches), keyboard: foodCardKeyboard(key, meal) };
+  state.setCard(key, { meal, matches, ...(header ? { header } : {}) });
+  return { text: cardText(meal, matches, header), keyboard: foodCardKeyboard(key, meal) };
+}
+
+// Карточки нет (старше суток, вытеснена или бот её потерял): всплывашка
+// исчезает за секунду, поэтому ещё и сообщением — иначе «нажал, и ничего».
+async function staleCard(ctx: Context): Promise<void> {
+  await ctx.answerCallbackQuery({ text: 'Эта карточка устарела' });
+  await ctx.reply('Эта карточка уже неактуальна — пришли фото или опиши еду ещё раз, соберу новую.');
 }
 
 async function photoIntent(imageBase64: string, caption?: string): Promise<IntentReply> {
@@ -184,13 +197,12 @@ async function foodFromBarcode(code: string, caption?: string): Promise<IntentRe
     log('barcode: ни в FatSecret, ни в Open Food Facts', outcome.fatsecretNote ?? '');
     return null;
   }
-  const card = buildFoodCard(mealByMoscowTime(new Date()), [outcome.match]);
   const why = outcome.kind === 'openfoodfacts' && outcome.fatsecretNote ? ` (${outcome.fatsecretNote})` : '';
   const how =
     outcome.kind === 'fatsecret'
       ? `🔎 Штрихкод ${code}: продукт из базы FatSecret.`
       : `🔎 Штрихкод ${code}: в FatSecret нет${why}, по этикетке (Open Food Facts) это «${outcome.product.brand ? `${outcome.product.brand} ` : ''}${outcome.product.name}» — подобрала аналог для дневника.`;
-  return { ...card, text: `${how}\n\n${card.text}` };
+  return buildFoodCard(mealByMoscowTime(new Date()), [outcome.match], how);
 }
 
 const BARCODE_TEXT_HINT = 'Можно прислать цифры текстом: «штрихкод 4600605030288».';
@@ -261,10 +273,10 @@ async function showFoodCard(
 // Ожидающая правка перехватывает сообщение до роутера: пересобираем карточку
 // по фразе и заменяем старую (её ключ гасим, чтобы старые кнопки не жили).
 async function maybeApplyFoodEdit(text: string): Promise<IntentReply | null> {
-  const edit = pendingFoodEdit;
+  const edit = state.edit;
   if (!edit) return null;
-  pendingFoodEdit = null;
-  pendingFood.delete(edit.key);
+  state.setEdit(null);
+  state.deleteCard(edit.key);
   const items = await reviseFoodItems(edit.matches, text);
   if (items.length === 0) {
     return { text: '❌ Ок, убрала всё — карточку закрыла.' };
@@ -368,13 +380,12 @@ bot.callbackQuery(/^work-no:(.+)$/, async (ctx) => {
 });
 
 bot.callbackQuery(/^food-yes:(.+)$/, async (ctx) => {
-  const pending = pendingFood.get(ctx.match[1]);
+  const pending = state.getCard(ctx.match[1]);
   if (!pending) {
-    await ctx.answerCallbackQuery({ text: 'Эта карточка устарела (возможно, бот перезапускался)' });
+    await staleCard(ctx);
     return;
   }
-  pendingFood.delete(ctx.match[1]);
-  if (pendingFoodEdit?.key === ctx.match[1]) pendingFoodEdit = null;
+  state.deleteCard(ctx.match[1]);
   await ctx.answerCallbackQuery({ text: 'Записываю…' });
 
   const entries: BufferedEntry[] = [];
@@ -414,8 +425,7 @@ bot.callbackQuery(/^food-yes:(.+)$/, async (ctx) => {
 });
 
 bot.callbackQuery(/^food-no:(.+)$/, async (ctx) => {
-  const existed = pendingFood.delete(ctx.match[1]);
-  if (pendingFoodEdit?.key === ctx.match[1]) pendingFoodEdit = null;
+  const existed = state.deleteCard(ctx.match[1]);
   await ctx.answerCallbackQuery({ text: existed ? 'Ок, не записываю' : 'Эта карточка устарела' });
   if (existed) await ctx.reply('❌ Еду не записала.');
 });
@@ -423,16 +433,19 @@ bot.callbackQuery(/^food-no:(.+)$/, async (ctx) => {
 bot.callbackQuery(/^food-meal:([^:]+):(breakfast|lunch|dinner|other)$/, async (ctx) => {
   const key = ctx.match[1];
   const meal = ctx.match[2] as FoodMeal;
-  const pending = pendingFood.get(key);
+  const pending = state.getCard(key);
   if (!pending) {
-    await ctx.answerCallbackQuery({ text: 'Эта карточка устарела (возможно, бот перезапускался)' });
+    await ctx.answerCallbackQuery({ text: 'Эта карточка устарела' });
     return;
   }
-  pending.meal = meal;
-  if (pendingFoodEdit?.key === key) pendingFoodEdit.meal = meal;
+  state.setCard(key, { ...pending, meal });
+  const edit = state.edit;
+  if (edit?.key === key) state.setEdit({ ...edit, meal });
   await ctx.answerCallbackQuery({ text: 'Приём пищи изменила' });
   try {
-    await ctx.editMessageText(formatFoodCard(meal, pending.matches), { reply_markup: foodCardKeyboard(key, meal) });
+    await ctx.editMessageText(cardText(meal, pending.matches, pending.header), {
+      reply_markup: foodCardKeyboard(key, meal),
+    });
   } catch (error) {
     // Повторное нажатие той же кнопки: Telegram отвергает правку без изменений.
     logError('food-meal', error);
@@ -440,12 +453,12 @@ bot.callbackQuery(/^food-meal:([^:]+):(breakfast|lunch|dinner|other)$/, async (c
 });
 
 bot.callbackQuery(/^food-edit:(.+)$/, async (ctx) => {
-  const pending = pendingFood.get(ctx.match[1]);
+  const pending = state.getCard(ctx.match[1]);
   if (!pending) {
-    await ctx.answerCallbackQuery({ text: 'Эта карточка устарела (возможно, бот перезапускался)' });
+    await staleCard(ctx);
     return;
   }
-  pendingFoodEdit = { key: ctx.match[1], meal: pending.meal, matches: pending.matches };
+  state.setEdit({ key: ctx.match[1], meal: pending.meal, matches: pending.matches });
   await ctx.answerCallbackQuery({ text: 'Жду поправку' });
   await ctx.reply('✏️ Пришли поправку текстом или голосом: «борщ 400 грамм, тосты убери».');
 });
@@ -606,8 +619,8 @@ bot.on('message:photo', async (ctx) => {
     // Подпись к фото («творожные сливки 320 грамм») — самый надёжный сигнал:
     // без неё модель гадает по снимку, часто тёмному ракурсу этикетки.
     const caption = ctx.message.caption?.trim();
-    const armed = barcodeModeArmed;
-    barcodeModeArmed = false;
+    const armed = state.barcodeArmed;
+    state.setBarcodeArmed(false);
     const reply = await foodFromPhoto(buffer.toString('base64'), caption || undefined, armed);
     await ctx.reply(reply.text, { reply_markup: reply.keyboard });
   } catch (error) {
@@ -632,7 +645,7 @@ bot.on('message:text', async (ctx) => {
     return;
   }
   if (text === BUTTON_PHOTO) {
-    barcodeModeArmed = false;
+    state.setBarcodeArmed(false);
     await ctx.reply('📷 Жду фото еды — распознаю блюда по снимку (штрихкод на упаковке тоже проверю).', {
       reply_markup: MAIN_KEYBOARD,
     });
