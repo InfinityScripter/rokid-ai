@@ -140,10 +140,16 @@ test('matchFoodByBarcode: нет в FatSecret → Open Food Facts → анало
     lookupOff: async () => ({
       name: 'Творожное зерно в сливках 5%',
       brand: 'Савушкин',
-      queryEn: 'cottage cheese',
+      queryEn: 'творожное зерно в сливках',
       quantityGrams: 320,
       kcalPer100g: 143,
     }),
+    // Русское имя с этикетки → перевод для поиска (у российских карточек
+    // Open Food Facts английского имени обычно нет).
+    translate: async (name) => {
+      assert.equal(name, 'творожное зерно в сливках');
+      return 'cottage cheese';
+    },
     searchFoods: async (query) => {
       assert.equal(query, 'cottage cheese');
       return [food('900', 'Cottage Cheese')];

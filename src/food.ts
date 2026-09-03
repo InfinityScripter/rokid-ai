@@ -79,6 +79,7 @@ async function chooseFoodAndServing(
   const response = await client.chat.completions.create({
     model: config.ROUTER_MODEL,
     max_tokens: 512,
+    temperature: 0,
     tools: [matchTool],
     tool_choice: { type: 'function', function: { name: 'match_food' } },
     messages: [
@@ -193,6 +194,7 @@ export async function reviseFoodItems(current: FoodMatch[], correction: string):
   const response = await client.chat.completions.create({
     model: config.ROUTER_MODEL,
     max_tokens: 1024,
+    temperature: 0,
     tools: [reviseTool],
     tool_choice: { type: 'function', function: { name: 'revise_food_items' } },
     messages: [
@@ -281,10 +283,35 @@ async function matchAmongCandidates(
   };
 }
 
+// У российских карточек Open Food Facts часто нет ни английского имени, ни
+// английской категории — поиск в FatSecret с русским запросом пуст. Короткий
+// перевод одним вызовом, без бренда («творожное зерно в сливках» → cottage
+// cheese grains in cream).
+async function translateToEnglishQuery(name: string): Promise<string> {
+  const response = await client.chat.completions.create({
+    model: config.ROUTER_MODEL,
+    max_tokens: 30,
+    temperature: 0,
+    messages: [
+      {
+        role: 'user',
+        content:
+          `Название продукта с этикетки: «${name}». Дай короткий английский запрос для поиска ` +
+          'в американской базе продуктов (2–4 слова, без бренда). Ответь только запросом.',
+      },
+    ],
+  });
+  const answer = (response.choices[0]?.message.content ?? '').trim().replace(/^["'«]+|["'».]+$/g, '');
+  return answer || name;
+}
+
+const CYRILLIC = /[А-Яа-яЁё]/;
+
 export type BarcodeDeps = {
   findFoodId?: (barcode: string) => Promise<string | null>;
   getFood?: (foodId: string) => Promise<{ food: FsFood; servings: FsServing[] }>;
   lookupOff?: (barcode: string) => Promise<OffProduct | null>;
+  translate?: (name: string) => Promise<string>;
   searchFoods?: MatchFoodDeps['searchFoods'];
   getServings?: MatchFoodDeps['getServings'];
   chooseFood?: MatchFoodDeps['chooseFood'];
@@ -309,6 +336,7 @@ export async function matchFoodByBarcode(
   const findFoodId = deps.findFoodId ?? fsFindFoodIdForBarcode;
   const getFood = deps.getFood ?? fsGetFood;
   const lookupOff = deps.lookupOff ?? lookupOpenFoodFacts;
+  const translate = deps.translate ?? translateToEnglishQuery;
   const chooseFood = deps.chooseFood ?? chooseFoodAndServing;
 
   try {
@@ -334,7 +362,7 @@ export async function matchFoodByBarcode(
     const item: FoodItem = {
       name: product.brand ? `${product.brand} ${product.name}` : product.name,
       amount: caption?.trim() || (product.quantityGrams ? `упаковка ${product.quantityGrams} г` : '1 упаковка'),
-      query: product.queryEn,
+      query: CYRILLIC.test(product.queryEn) ? await translate(product.queryEn) : product.queryEn,
     };
     const [match] = await matchFoodItems([item], {
       searchFoods: deps.searchFoods,

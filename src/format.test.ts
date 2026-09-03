@@ -37,3 +37,22 @@ test('formatFoodCard: найденная позиция, не найденная
   assert.equal(lines[3], 'Итого: 250 ккал');
   assert.equal(lines.at(-1), 'powered by fatsecret');
 });
+
+test('formatFoodCard: дробные калории округляются до целых', () => {
+  const text = formatFoodCard('other', [
+    {
+      name: 'творожный сыр',
+      amount: '320 г',
+      food: { foodId: '1', foodName: '4% Cottage Cheese' },
+      servingId: 's',
+      units: 3.2,
+      grams: 320,
+      calories: 339.823008852,
+      note: null,
+      labelKcalPer100g: 91,
+    },
+  ]);
+  assert.match(text, /— 340 ккал \(по этикетке ~291 ккал\)/);
+  assert.match(text, /Итого: 340 ккал/);
+  assert.doesNotMatch(text, /339\.8/);
+});
