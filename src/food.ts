@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { z } from 'zod';
 
 import { config } from './config.js';
+import { lookupOpenFoodFacts, type OffProduct } from './barcode.js';
 import { fsFindFoodIdForBarcode, fsGetFood, fsGetServings, fsSearchFoods, type FsFood, type FsServing } from './fatsecret.js';
 import { logError } from './log.js';
 
@@ -36,6 +37,9 @@ export type FoodMatch = {
   grams: number | null;
   calories: number | null;
   note: string | null;
+  // Калории на 100 г с этикетки (Open Food Facts) — для сверки с аналогом
+  // из FatSecret; в дневник идёт аналог, этикетка только показывается.
+  labelKcalPer100g?: number | null;
 };
 
 type CandidateWithServings = { food: FsFood; servings: FsServing[] };
@@ -280,34 +284,66 @@ async function matchAmongCandidates(
 export type BarcodeDeps = {
   findFoodId?: (barcode: string) => Promise<string | null>;
   getFood?: (foodId: string) => Promise<{ food: FsFood; servings: FsServing[] }>;
+  lookupOff?: (barcode: string) => Promise<OffProduct | null>;
+  searchFoods?: MatchFoodDeps['searchFoods'];
+  getServings?: MatchFoodDeps['getServings'];
   chooseFood?: MatchFoodDeps['chooseFood'];
 };
 
-// Продукт по штрихкоду: точное попадание в базу вместо поиска по названию.
-// Порцию всё равно выбирает модель — из подписи («всю банку 320 г»). Любой
-// сбой (нет в базе, нет прав Premier на barcode-API, сеть) — null: вызывающий
-// код откатывается на распознавание по фото, пользователь ошибки не видит.
+export type BarcodeOutcome =
+  | { kind: 'fatsecret'; match: FoodMatch }
+  | { kind: 'openfoodfacts'; match: FoodMatch; product: OffProduct }
+  | { kind: 'not_found' };
+
+// Продукт по штрихкоду. Сначала база FatSecret (точное попадание, метод
+// Premier-exclusive), затем Open Food Facts: название с этикетки → поиск
+// аналога в FatSecret по английскому имени. Порцию в обоих случаях выбирает
+// модель из подписи («всю банку 320 г») или из веса упаковки. Сбои (нет в
+// базах, нет прав Premier, сеть) — not_found: вызывающий код откатывается
+// на распознавание по фото, ошибку пользователь не видит.
 export async function matchFoodByBarcode(
   barcode: string,
   caption: string | undefined,
   deps: BarcodeDeps = {},
-): Promise<FoodMatch | null> {
+): Promise<BarcodeOutcome> {
   const findFoodId = deps.findFoodId ?? fsFindFoodIdForBarcode;
   const getFood = deps.getFood ?? fsGetFood;
+  const lookupOff = deps.lookupOff ?? lookupOpenFoodFacts;
   const chooseFood = deps.chooseFood ?? chooseFoodAndServing;
+
   try {
     const foodId = await findFoodId(barcode);
-    if (!foodId) return null;
-    const candidate = await getFood(foodId);
-    if (candidate.servings.length === 0) return null;
-    const item: FoodItem = {
-      name: candidate.food.brand ? `${candidate.food.brand} ${candidate.food.name}` : candidate.food.name,
-      amount: caption?.trim() || '1 порция',
-      query: candidate.food.name,
-    };
-    return await matchAmongCandidates(item, [candidate], chooseFood);
+    if (foodId) {
+      const candidate = await getFood(foodId);
+      if (candidate.servings.length > 0) {
+        const item: FoodItem = {
+          name: candidate.food.brand ? `${candidate.food.brand} ${candidate.food.name}` : candidate.food.name,
+          amount: caption?.trim() || '1 порция',
+          query: candidate.food.name,
+        };
+        return { kind: 'fatsecret', match: await matchAmongCandidates(item, [candidate], chooseFood) };
+      }
+    }
   } catch (error) {
     logError('food-barcode', error);
-    return null;
+  }
+
+  try {
+    const product = await lookupOff(barcode);
+    if (!product) return { kind: 'not_found' };
+    const item: FoodItem = {
+      name: product.brand ? `${product.brand} ${product.name}` : product.name,
+      amount: caption?.trim() || (product.quantityGrams ? `упаковка ${product.quantityGrams} г` : '1 упаковка'),
+      query: product.queryEn,
+    };
+    const [match] = await matchFoodItems([item], {
+      searchFoods: deps.searchFoods,
+      getServings: deps.getServings,
+      chooseFood: deps.chooseFood,
+    });
+    return { kind: 'openfoodfacts', match: { ...match, labelKcalPer100g: product.kcalPer100g }, product };
+  } catch (error) {
+    logError('food-barcode-off', error);
+    return { kind: 'not_found' };
   }
 }

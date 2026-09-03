@@ -32,3 +32,52 @@ test('не штрихкодовая длина и «none» → null', () => {
   assert.equal(normalizeBarcode('12345'), null);
   assert.equal(normalizeBarcode(''), null);
 });
+
+const { parseBarcodeText, parseOffProduct } = await import('./barcode.js');
+
+test('parseBarcodeText: «штрихкод …», голые цифры, хвост — подпись', () => {
+  assert.deepEqual(parseBarcodeText('штрихкод 5901234123457'), { code: '5901234123457', caption: undefined });
+  assert.deepEqual(parseBarcodeText('Штрих-код: 590 1234 123457 всю банку'), {
+    code: '5901234123457',
+    caption: 'всю банку',
+  });
+  assert.deepEqual(parseBarcodeText('4006381333931'), { code: '4006381333931', caption: undefined });
+});
+
+test('parseBarcodeText: обычный текст и невалидные цифры — не штрихкод', () => {
+  assert.equal(parseBarcodeText('съел борщ'), null);
+  assert.equal(parseBarcodeText('4006381333932'), null);
+  assert.equal(parseBarcodeText('позвони +7 999 123 45 67'), null);
+});
+
+test('parseOffProduct: имя, бренд, граммы упаковки, ккал на 100 г, английский запрос', () => {
+  const product = parseOffProduct({
+    status: 1,
+    product: {
+      product_name: 'Творожное зерно в сливках 5%',
+      brands: 'Савушкин, Savushkin',
+      quantity: '320 г',
+      categories_tags: ['en:dairies', 'en:cheeses', 'en:cottage-cheeses'],
+      nutriments: { 'energy-kcal_100g': 143, proteins_100g: '9.5' },
+    },
+  });
+  assert.deepEqual(product, {
+    name: 'Творожное зерно в сливках 5%',
+    brand: 'Савушкин',
+    queryEn: 'cottage cheeses',
+    quantityGrams: 320,
+    kcalPer100g: 143,
+  });
+});
+
+test('parseOffProduct: product_name_en важнее категории, нет товара → null', () => {
+  const product = parseOffProduct({
+    status: 1,
+    product: { product_name: 'Йогурт', product_name_en: 'Plain yogurt', quantity: '0,5 l' },
+  });
+  assert.equal(product?.queryEn, 'Plain yogurt');
+  assert.equal(product?.quantityGrams, null);
+  assert.equal(product?.kcalPer100g, null);
+  assert.equal(parseOffProduct({ status: 0 }), null);
+  assert.equal(parseOffProduct({ status: 1, product: { brands: 'X' } }), null);
+});

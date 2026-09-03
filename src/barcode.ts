@@ -32,10 +32,25 @@ export function normalizeBarcode(raw: string): string | null {
   return digits.padStart(13, '0');
 }
 
+// Штрихкод текстом: «штрихкод 4606605030288 всю банку» или просто цифры —
+// запасной путь, когда с фото цифры не читаются. Хвост после цифр — подпись.
+export function parseBarcodeText(text: string): { code: string; caption: string | undefined } | null {
+  const match = text.trim().match(/^(?:штрих\s*-?\s*код[:\s]*)?(\d[\d\s]{6,18}\d)(?:\s+(.+))?$/iu);
+  if (!match) return null;
+  const code = normalizeBarcode(match[1]);
+  if (!code) return null;
+  return { code, caption: match[2]?.trim() || undefined };
+}
+
+// unreadable — штрихкод на фото есть, но цифры не разобрать (или контрольная
+// сумма не сошлась): бот подскажет прислать цифры текстом. null — штрихкода
+// нет вовсе, обычное фото еды.
+export type BarcodeRead = { code: string } | 'unreadable' | null;
+
 export async function readBarcodeFromPhoto(
   imageBase64: string,
   mediaType: 'image/jpeg' | 'image/png',
-): Promise<string | null> {
+): Promise<BarcodeRead> {
   const response = await client.chat.completions.create({
     model: config.ROUTER_MODEL,
     max_tokens: 40,
@@ -49,12 +64,79 @@ export async function readBarcodeFromPhoto(
             text:
               'Есть ли на фото штрихкод товара с цифрами под полосами (EAN-13, EAN-8 или UPC)? ' +
               'Если да и цифры читаются целиком — ответь ТОЛЬКО этими цифрами подряд, без пробелов и слов. ' +
-              'Если штрихкода нет или цифры не читаются полностью — ответь одним словом: none.',
+              'Если штрихкод есть, но цифры не читаются полностью (темно, размыто, обрезано) — ответь одним словом: unreadable. ' +
+              'Если штрихкода на фото нет — ответь одним словом: none.',
           },
         ],
       },
     ],
   });
-  const answer = (response.choices[0]?.message.content ?? '').trim();
-  return normalizeBarcode(answer);
+  const answer = (response.choices[0]?.message.content ?? '').trim().toLowerCase();
+  const code = normalizeBarcode(answer);
+  if (code) return { code };
+  return answer.includes('unreadable') || /\d{8,}/.test(answer) ? 'unreadable' : null;
+}
+
+// Open Food Facts — открытая база штрихкодов с российскими товарами и КБЖУ с
+// этикетки; у FatSecret база американская, и 460… там почти всегда пусто.
+// В дневник FatSecret всё равно пишется их продукт-аналог (своих там не
+// создать), а этикеточные калории показываем рядом для сверки.
+export type OffProduct = {
+  name: string;
+  brand: string | null;
+  queryEn: string;
+  quantityGrams: number | null;
+  kcalPer100g: number | null;
+};
+
+export type OffRaw = {
+  status?: number;
+  product?: {
+    product_name?: string;
+    product_name_ru?: string;
+    product_name_en?: string;
+    brands?: string;
+    quantity?: string;
+    categories_tags?: string[];
+    nutriments?: Record<string, number | string>;
+  };
+};
+
+export function parseOffProduct(raw: OffRaw): OffProduct | null {
+  const product = raw.product;
+  if (raw.status !== 1 || !product) return null;
+  const name = (product.product_name_ru || product.product_name || product.product_name_en || '').trim();
+  if (!name) return null;
+  const brand = product.brands?.split(',')[0]?.trim() || null;
+  // Английское имя для поиска аналога в FatSecret: своё поле, иначе самая
+  // узкая английская категория («en:cottage-cheeses» → «cottage cheeses»).
+  const category = product.categories_tags
+    ?.filter((tag) => tag.startsWith('en:'))
+    .at(-1)
+    ?.slice(3)
+    .replace(/-/g, ' ');
+  const queryEn = product.product_name_en?.trim() || category || name;
+  // Без \b: в JS-регулярке без флага u граница слова — только ASCII, после
+  // кириллической «г» она не срабатывает и «320 г» терялось.
+  const quantity = product.quantity?.match(/(\d+(?:[.,]\d+)?)\s*(?:гр|г|ml|мл|g)(?!\p{L})/iu);
+  const kcalRaw = product.nutriments?.['energy-kcal_100g'];
+  const kcal = typeof kcalRaw === 'string' ? Number(kcalRaw) : kcalRaw;
+  return {
+    name,
+    brand,
+    queryEn,
+    quantityGrams: quantity ? Number(quantity[1].replace(',', '.')) : null,
+    kcalPer100g: typeof kcal === 'number' && Number.isFinite(kcal) ? kcal : null,
+  };
+}
+
+export async function lookupOpenFoodFacts(barcode: string): Promise<OffProduct | null> {
+  const fields = 'product_name,product_name_ru,product_name_en,brands,quantity,categories_tags,nutriments';
+  const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json?fields=${fields}`, {
+    headers: { 'User-Agent': 'rokid-ai/0.1 (https://github.com/InfinityScripter/rokid-ai)' },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Open Food Facts: HTTP ${res.status}`);
+  return parseOffProduct((await res.json()) as OffRaw);
 }

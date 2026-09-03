@@ -114,8 +114,8 @@ test('mealByMoscowTime: границы завтрак/обед/ужин/пере
   assert.equal(mealByMoscowTime(new Date('2026-08-26T21:30:00.000Z')), 'other');
 });
 
-test('matchFoodByBarcode: продукт из базы, порция из подписи через модель', async () => {
-  const result = await matchFoodByBarcode('4606605030281', 'всю банку 320 г', {
+test('matchFoodByBarcode: продукт из базы FatSecret, порция из подписи через модель', async () => {
+  const outcome = await matchFoodByBarcode('4606605030281', 'всю банку 320 г', {
     findFoodId: async (barcode) => (barcode === '4606605030281' ? '777' : null),
     getFood: async () => ({
       food: { foodId: '777', name: 'Cottage Cheese Grains', brand: 'Savushkin', description: '' },
@@ -126,34 +126,64 @@ test('matchFoodByBarcode: продукт из базы, порция из под
       return { foodId: '777', servingId: 's100', units: 3.2, grams: 320 };
     },
   });
-  assert.ok(result);
-  assert.equal(result.food?.foodId, '777');
-  assert.equal(result.name, 'Savushkin Cottage Cheese Grains');
-  assert.equal(result.units, 3.2);
-  assert.equal(result.calories, 110 * 3.2);
+  assert.equal(outcome.kind, 'fatsecret');
+  if (outcome.kind !== 'fatsecret') return;
+  assert.equal(outcome.match.food?.foodId, '777');
+  assert.equal(outcome.match.name, 'Savushkin Cottage Cheese Grains');
+  assert.equal(outcome.match.units, 3.2);
+  assert.equal(outcome.match.calories, 110 * 3.2);
 });
 
-test('matchFoodByBarcode: нет в базе → null, без вызова модели', async () => {
-  let chooseCalled = false;
-  const result = await matchFoodByBarcode('5901234123457', undefined, {
+test('matchFoodByBarcode: нет в FatSecret → Open Food Facts → аналог по английскому имени, ккал с этикетки', async () => {
+  const outcome = await matchFoodByBarcode('4606605030281', undefined, {
     findFoodId: async () => null,
-    getFood: async () => {
-      throw new Error('не должно вызываться');
+    lookupOff: async () => ({
+      name: 'Творожное зерно в сливках 5%',
+      brand: 'Савушкин',
+      queryEn: 'cottage cheese',
+      quantityGrams: 320,
+      kcalPer100g: 143,
+    }),
+    searchFoods: async (query) => {
+      assert.equal(query, 'cottage cheese');
+      return [food('900', 'Cottage Cheese')];
     },
+    getServings: async () => [serving('s900', 98)],
+    chooseFood: async (item) => {
+      assert.equal(item.amount, 'упаковка 320 г');
+      return { foodId: '900', servingId: 's900', units: 3.2, grams: 320 };
+    },
+  });
+  assert.equal(outcome.kind, 'openfoodfacts');
+  if (outcome.kind !== 'openfoodfacts') return;
+  assert.equal(outcome.product.name, 'Творожное зерно в сливках 5%');
+  assert.equal(outcome.match.food?.foodId, '900');
+  assert.equal(outcome.match.labelKcalPer100g, 143);
+  assert.equal(outcome.match.calories, 98 * 3.2);
+});
+
+test('matchFoodByBarcode: нет ни в одной базе → not_found, модель не вызывается', async () => {
+  let chooseCalled = false;
+  const outcome = await matchFoodByBarcode('5901234123457', undefined, {
+    findFoodId: async () => null,
+    lookupOff: async () => null,
     chooseFood: async () => {
       chooseCalled = true;
       return { foodId: 'x', servingId: 'y', units: 1, grams: null };
     },
   });
-  assert.equal(result, null);
+  assert.deepEqual(outcome, { kind: 'not_found' });
   assert.equal(chooseCalled, false);
 });
 
-test('matchFoodByBarcode: ошибка API (нет прав Premier) → null, а не исключение', async () => {
-  const result = await matchFoodByBarcode('5901234123457', undefined, {
+test('matchFoodByBarcode: ошибки API (нет прав Premier, сеть) → not_found, а не исключение', async () => {
+  const outcome = await matchFoodByBarcode('5901234123457', undefined, {
     findFoodId: async () => {
       throw new Error('FatSecret food.find_id_for_barcode: 14 Missing scope');
     },
+    lookupOff: async () => {
+      throw new Error('Open Food Facts: HTTP 503');
+    },
   });
-  assert.equal(result, null);
+  assert.deepEqual(outcome, { kind: 'not_found' });
 });

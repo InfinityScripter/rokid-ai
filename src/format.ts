@@ -22,11 +22,18 @@ export function formatEventLine(event: CalendarEventFields): string {
   return `«${event.title}» — ${when}, ${event.durationMinutes} мин (${calendar})${place}`;
 }
 
+// Этикеточные калории (Open Food Facts) рядом с аналогом из FatSecret —
+// чтобы расхождение было видно до записи, а не после.
+function labelLine(m: FoodMatch): string {
+  if (!m.labelKcalPer100g || !m.grams) return '';
+  return ` (по этикетке ~${Math.round((m.labelKcalPer100g * m.grams) / 100)} ккал)`;
+}
+
 export function formatFoodCard(meal: FoodMeal, matches: FoodMatch[]): string {
   const meals = { breakfast: 'завтрак', lunch: 'обед', dinner: 'ужин', other: 'перекус' };
   const lines = matches.map((m) =>
     m.food
-      ? `• ${m.name} (${m.amount}) → ${m.food.foodName}${m.grams ? `, ${m.grams} г` : ''} — ${m.calories} ккал`
+      ? `• ${m.name} (${m.amount}) → ${m.food.foodName}${m.grams ? `, ${m.grams} г` : ''} — ${m.calories} ккал${labelLine(m)}`
       : `• ${m.name} (${m.amount}) — ${m.note}`,
   );
   const total = matches.reduce((sum, m) => sum + (m.calories ?? 0), 0);
