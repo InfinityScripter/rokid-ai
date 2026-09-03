@@ -3,7 +3,16 @@ import { z } from 'zod';
 
 import { config } from './config.js';
 import { lookupOpenFoodFacts, type OffProduct } from './barcode.js';
-import { fsFindFoodIdForBarcode, fsGetFood, fsGetServings, fsSearchFoods, type FsFood, type FsServing } from './fatsecret.js';
+import {
+  fsFindFoodIdForBarcode,
+  fsGetFood,
+  fsGetServings,
+  fsSearchFoods,
+  isPermissionError,
+  type FsFood,
+  type FsRegion,
+  type FsServing,
+} from './fatsecret.js';
 import { logError } from './log.js';
 
 const client = new OpenAI({
@@ -318,7 +327,7 @@ async function translateToEnglishQuery(name: string): Promise<string> {
 const CYRILLIC = /[А-Яа-яЁё]/;
 
 export type BarcodeDeps = {
-  findFoodId?: (barcode: string) => Promise<string | null>;
+  findFoodId?: (barcode: string, region?: FsRegion) => Promise<string | null>;
   getFood?: (foodId: string) => Promise<{ food: FsFood; servings: FsServing[] }>;
   lookupOff?: (barcode: string) => Promise<OffProduct | null>;
   translate?: (name: string) => Promise<string>;
@@ -327,10 +336,39 @@ export type BarcodeDeps = {
   chooseFood?: MatchFoodDeps['chooseFood'];
 };
 
+// fatsecretNote — почему база FatSecret не дала продукт: «нет прав Premier»
+// и «нет в базе» для пользователя разные вещи.
 export type BarcodeOutcome =
   | { kind: 'fatsecret'; match: FoodMatch }
-  | { kind: 'openfoodfacts'; match: FoodMatch; product: OffProduct }
-  | { kind: 'not_found' };
+  | { kind: 'openfoodfacts'; match: FoodMatch; product: OffProduct; fatsecretNote?: string }
+  | { kind: 'not_found'; fatsecretNote?: string };
+
+const FATSECRET_RU: FsRegion = { region: 'RU', language: 'ru' };
+
+// Сначала российская база (region=RU), при отказе по скоупу локализации —
+// база по умолчанию (US). Ошибка прав на сам barcode-метод — в заметку.
+async function findInFatSecret(
+  barcode: string,
+  findFoodId: NonNullable<BarcodeDeps['findFoodId']>,
+): Promise<{ foodId: string | null; note?: string }> {
+  try {
+    return { foodId: await findFoodId(barcode, FATSECRET_RU) };
+  } catch (error) {
+    if (!isPermissionError(error)) throw error;
+    logError('food-barcode-ru', error);
+  }
+  try {
+    return { foodId: await findFoodId(barcode) };
+  } catch (error) {
+    logError('food-barcode', error);
+    return {
+      foodId: null,
+      note: isPermissionError(error)
+        ? 'FatSecret не пустил в barcode-API — это функция Premier, заявка ещё не одобрена'
+        : 'FatSecret ответил ошибкой',
+    };
+  }
+}
 
 // Продукт по штрихкоду. Сначала база FatSecret (точное попадание, метод
 // Premier-exclusive), затем Open Food Facts: название с этикетки → поиск
@@ -349,10 +387,12 @@ export async function matchFoodByBarcode(
   const translate = deps.translate ?? translateToEnglishQuery;
   const chooseFood = deps.chooseFood ?? chooseFoodAndServing;
 
+  let fatsecretNote: string | undefined;
   try {
-    const foodId = await findFoodId(barcode);
-    if (foodId) {
-      const candidate = await getFood(foodId);
+    const found = await findInFatSecret(barcode, findFoodId);
+    fatsecretNote = found.note;
+    if (found.foodId) {
+      const candidate = await getFood(found.foodId);
       if (candidate.servings.length > 0) {
         const item: FoodItem = {
           name: candidate.food.brand ? `${candidate.food.brand} ${candidate.food.name}` : candidate.food.name,
@@ -364,11 +404,12 @@ export async function matchFoodByBarcode(
     }
   } catch (error) {
     logError('food-barcode', error);
+    fatsecretNote = 'FatSecret ответил ошибкой';
   }
 
   try {
     const product = await lookupOff(barcode);
-    if (!product) return { kind: 'not_found' };
+    if (!product) return { kind: 'not_found', ...(fatsecretNote ? { fatsecretNote } : {}) };
     const label = [
       product.kcalPer100g !== null ? `${product.kcalPer100g} ккал` : null,
       product.proteinPer100g !== null ? `белки ${product.proteinPer100g} г` : null,
@@ -386,9 +427,14 @@ export async function matchFoodByBarcode(
       getServings: deps.getServings,
       chooseFood: deps.chooseFood,
     });
-    return { kind: 'openfoodfacts', match: { ...match, labelKcalPer100g: product.kcalPer100g }, product };
+    return {
+      kind: 'openfoodfacts',
+      match: { ...match, labelKcalPer100g: product.kcalPer100g },
+      product,
+      ...(fatsecretNote ? { fatsecretNote } : {}),
+    };
   } catch (error) {
     logError('food-barcode-off', error);
-    return { kind: 'not_found' };
+    return { kind: 'not_found', ...(fatsecretNote ? { fatsecretNote } : {}) };
   }
 }

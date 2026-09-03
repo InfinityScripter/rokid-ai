@@ -181,14 +181,15 @@ async function foodFromBarcode(code: string, caption?: string): Promise<IntentRe
   log('barcode:', code);
   const outcome = await matchFoodByBarcode(code, caption);
   if (outcome.kind === 'not_found') {
-    log('barcode: ни в FatSecret, ни в Open Food Facts');
+    log('barcode: ни в FatSecret, ни в Open Food Facts', outcome.fatsecretNote ?? '');
     return null;
   }
   const card = buildFoodCard(mealByMoscowTime(new Date()), [outcome.match]);
+  const why = outcome.kind === 'openfoodfacts' && outcome.fatsecretNote ? ` (${outcome.fatsecretNote})` : '';
   const how =
     outcome.kind === 'fatsecret'
       ? `🔎 Штрихкод ${code}: продукт из базы FatSecret.`
-      : `🔎 Штрихкод ${code}: в FatSecret нет, по этикетке (Open Food Facts) это «${outcome.product.brand ? `${outcome.product.brand} ` : ''}${outcome.product.name}» — подобрала аналог для дневника.`;
+      : `🔎 Штрихкод ${code}: в FatSecret нет${why}, по этикетке (Open Food Facts) это «${outcome.product.brand ? `${outcome.product.brand} ` : ''}${outcome.product.name}» — подобрала аналог для дневника.`;
   return { ...card, text: `${how}\n\n${card.text}` };
 }
 
