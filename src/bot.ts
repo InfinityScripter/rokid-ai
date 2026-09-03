@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { writeFile, rm } from 'node:fs/promises';
 
-import { Bot, InlineKeyboard } from 'grammy';
+import { Bot, InlineKeyboard, Keyboard } from 'grammy';
 
 import {
   hasBarcodeKeyword,
@@ -45,6 +45,39 @@ let lastUndoKey: string | null = null;
 let pendingFoodEdit: { key: string; meal: FoodMeal; matches: FoodMatch[] } | null = null;
 // /barcode без цифр: следующее фото разбирается только по штрихкоду.
 let barcodeModeArmed = false;
+
+// Постоянная клавиатура под полем ввода — выбор режима одним тапом вместо
+// команды. Тексты кнопок перехватываются до роутера (см. message:text).
+const BUTTON_BARCODE = '🔎 Штрихкод';
+const BUTTON_PHOTO = '📷 Фото еды';
+const BUTTON_NOTES = '📝 Заметки';
+const MAIN_KEYBOARD = new Keyboard().text(BUTTON_BARCODE).text(BUTTON_PHOTO).row().text(BUTTON_NOTES).resized().persistent();
+
+function armBarcodeMode(): string {
+  barcodeModeArmed = true;
+  return (
+    '🔎 Жду фото штрихкода — следующий снимок разберу только по нему, без угадывания. ' +
+    'Или сразу цифрами: /barcode 4600605030288 всю банку'
+  );
+}
+
+function notesReply(): string {
+  const notes = listNotes(10);
+  if (notes.length === 0) {
+    return 'Заметок пока нет — пришли текст или голосовое, всё, что не встреча и не еда, запишу сюда.';
+  }
+  const lines = notes.map((note) => {
+    const when = new Date(note.at).toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    return `• ${when} — ${note.text}`;
+  });
+  return `📝 Последние заметки:\n${lines.join('\n')}`;
+}
 
 export type IntentReply = { text: string; keyboard?: InlineKeyboard };
 
@@ -430,12 +463,13 @@ bot.command('start', async (ctx) => {
     'Привет! Я — инбокс очков Rokid.\n' +
       '🎤 Голосовое → разберу встречу, еду или заметку\n' +
       '📷 Фото еды → определю блюда и порции; штрихкод на упаковке — найду продукт по нему\n' +
-      '🔎 /barcode → следующее фото только по штрихкоду (или /barcode <цифры>)\n' +
+      '🔎 Кнопка «Штрихкод» (или /barcode) → следующее фото только по штрихкоду\n' +
       '✍️ Текст → то же, что и голосовое',
+    { reply_markup: MAIN_KEYBOARD },
   );
 });
 
-bot.command('barcode', async (ctx) => {
+bot.command(['barcode', 'barkode', 'shtrihkod'], async (ctx) => {
   const typed = parseBarcodeText((ctx.match ?? '').trim());
   if (typed) {
     if (!fsLinked()) {
@@ -453,30 +487,11 @@ bot.command('barcode', async (ctx) => {
     }
     return;
   }
-  barcodeModeArmed = true;
-  await ctx.reply(
-    '🔎 Жду фото штрихкода — следующий снимок разберу только по нему, без угадывания. ' +
-      'Или сразу цифрами: /barcode 4600605030288 всю банку',
-  );
+  await ctx.reply(armBarcodeMode(), { reply_markup: MAIN_KEYBOARD });
 });
 
 bot.command('notes', async (ctx) => {
-  const notes = listNotes(10);
-  if (notes.length === 0) {
-    await ctx.reply('Заметок пока нет — пришли текст или голосовое, всё, что не встреча и не еда, запишу сюда.');
-    return;
-  }
-  const lines = notes.map((note) => {
-    const when = new Date(note.at).toLocaleString('ru-RU', {
-      timeZone: 'Europe/Moscow',
-      day: 'numeric',
-      month: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    return `• ${when} — ${note.text}`;
-  });
-  await ctx.reply(`📝 Последние заметки:\n${lines.join('\n')}`);
+  await ctx.reply(notesReply(), { reply_markup: MAIN_KEYBOARD });
 });
 
 bot.command('fatsecret_link', async (ctx) => {
@@ -600,7 +615,38 @@ bot.on('message:photo', async (ctx) => {
   }
 });
 
+// Список для меню команд Telegram (автодополнение по «/») и для ответа на
+// незнакомую команду — чтобы опечатка вроде /barkode не уезжала в заметки.
+export const BOT_COMMANDS = [
+  { command: 'barcode', description: 'Следующее фото — только по штрихкоду (или /barcode <цифры>)' },
+  { command: 'notes', description: 'Последние заметки' },
+  { command: 'fatsecret_link', description: 'Привязать аккаунт FatSecret' },
+  { command: 'start', description: 'Что умеет бот' },
+];
+
 bot.on('message:text', async (ctx) => {
+  const text = ctx.message.text.trim();
+  if (text === BUTTON_BARCODE) {
+    await ctx.reply(armBarcodeMode(), { reply_markup: MAIN_KEYBOARD });
+    return;
+  }
+  if (text === BUTTON_PHOTO) {
+    barcodeModeArmed = false;
+    await ctx.reply('📷 Жду фото еды — распознаю блюда по снимку (штрихкод на упаковке тоже проверю).', {
+      reply_markup: MAIN_KEYBOARD,
+    });
+    return;
+  }
+  if (text === BUTTON_NOTES) {
+    await ctx.reply(notesReply(), { reply_markup: MAIN_KEYBOARD });
+    return;
+  }
+  if (text.startsWith('/')) {
+    await ctx.reply(`Не знаю такой команды. Есть: ${BOT_COMMANDS.map((c) => `/${c.command}`).join(', ')}`, {
+      reply_markup: MAIN_KEYBOARD,
+    });
+    return;
+  }
   try {
     const edited = await maybeApplyFoodEdit(ctx.message.text);
     if (edited) {

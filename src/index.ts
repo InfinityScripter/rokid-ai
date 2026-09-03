@@ -1,4 +1,4 @@
-import { bot } from './bot.js';
+import { BOT_COMMANDS, bot } from './bot.js';
 import { warmUpCalendar } from './calendar.js';
 import { config } from './config.js';
 import { isInvalidTokenError } from './fatsecret.js';
@@ -44,6 +44,7 @@ if (config.ROKID_MODE === 'mac') {
 startInboxServer();
 flushFoodBuffer();
 setInterval(flushFoodBuffer, FOOD_BUFFER_FLUSH_INTERVAL_MS);
+bot.api.setMyCommands(BOT_COMMANDS).catch((e) => logError('set-my-commands', e));
 bot.start({
   onStart: () => log('rokid-ai бот запущен, жду голосовые и фото'),
 });
