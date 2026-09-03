@@ -3,7 +3,7 @@ import { writeFile, rm } from 'node:fs/promises';
 
 import { Bot, InlineKeyboard } from 'grammy';
 
-import { readBarcodeFromPhoto } from './barcode.js';
+import { parseBarcodeText, readBarcodeFromPhoto, type BarcodeRead } from './barcode.js';
 import { caldavListEvents } from './caldav.js';
 import { config } from './config.js';
 import { fsFinishLink, fsLinked, fsStartLink, isInvalidTokenError } from './fatsecret.js';
@@ -129,25 +129,59 @@ function buildFoodCard(meal: FoodMeal, matches: FoodMatch[]): IntentReply {
   return { text: formatFoodCard(meal, matches), keyboard: foodCardKeyboard(key, meal) };
 }
 
-// Фото еды: сначала штрихкод (точное попадание в базу), при любом сбое —
-// распознавание блюд по снимку. Подпись к фото идёт и туда, и туда.
-export async function foodFromPhoto(imageBase64: string, caption?: string): Promise<IntentReply> {
-  if (fsLinked()) {
-    let barcode: string | null = null;
-    try {
-      barcode = await readBarcodeFromPhoto(imageBase64, 'image/jpeg');
-    } catch (error) {
-      logError('barcode-read', error);
-    }
-    if (barcode) {
-      log('barcode:', barcode);
-      const match = await matchFoodByBarcode(barcode, caption);
-      if (match) return buildFoodCard(mealByMoscowTime(new Date()), [match]);
-      log('barcode: в FatSecret не нашла, распознаю по фото');
-    }
-  }
+async function photoIntent(imageBase64: string, caption?: string): Promise<IntentReply> {
   const intent = await parseFoodPhoto(imageBase64, 'image/jpeg', caption);
   return applyIntent(intent);
+}
+
+// Карточка по штрихкоду со строкой-пояснением, откуда взялся продукт;
+// null — ни в одной базе нет, пусть вызывающий код идёт другим путём.
+async function foodFromBarcode(code: string, caption?: string): Promise<IntentReply | null> {
+  log('barcode:', code);
+  const outcome = await matchFoodByBarcode(code, caption);
+  if (outcome.kind === 'not_found') {
+    log('barcode: ни в FatSecret, ни в Open Food Facts');
+    return null;
+  }
+  const card = buildFoodCard(mealByMoscowTime(new Date()), [outcome.match]);
+  const how =
+    outcome.kind === 'fatsecret'
+      ? `🔎 Штрихкод ${code}: продукт из базы FatSecret.`
+      : `🔎 Штрихкод ${code}: в FatSecret нет, по этикетке (Open Food Facts) это «${outcome.product.brand ? `${outcome.product.brand} ` : ''}${outcome.product.name}» — подобрала аналог для дневника.`;
+  return { ...card, text: `${how}\n\n${card.text}` };
+}
+
+// Фото еды: сначала штрихкод (точное попадание в базу), при любом сбое —
+// распознавание блюд по снимку, и бот говорит, что именно произошло со
+// штрихкодом: молчаливый откат выглядел как «не распознал».
+export async function foodFromPhoto(imageBase64: string, caption?: string): Promise<IntentReply> {
+  if (!fsLinked()) return photoIntent(imageBase64, caption);
+  let read: BarcodeRead = null;
+  try {
+    read = await readBarcodeFromPhoto(imageBase64, 'image/jpeg');
+  } catch (error) {
+    logError('barcode-read', error);
+  }
+  if (read === 'unreadable') {
+    const reply = await photoIntent(imageBase64, caption);
+    return {
+      ...reply,
+      text:
+        '🔎 Штрихкод на фото есть, но цифры не разобрать — распознаю по снимку. ' +
+        'Можно прислать цифры текстом: «штрихкод 4600000000000».\n\n' +
+        reply.text,
+    };
+  }
+  if (read) {
+    const byCode = await foodFromBarcode(read.code, caption);
+    if (byCode) return byCode;
+    const reply = await photoIntent(imageBase64, caption);
+    return {
+      ...reply,
+      text: `🔎 Штрихкод ${read.code} прочитала, но его нет ни в FatSecret, ни в Open Food Facts — распознаю по снимку.\n\n${reply.text}`,
+    };
+  }
+  return photoIntent(imageBase64, caption);
 }
 
 async function showFoodCard(
@@ -514,6 +548,15 @@ bot.on('message:text', async (ctx) => {
     const edited = await maybeApplyFoodEdit(ctx.message.text);
     if (edited) {
       await ctx.reply(edited.text, { reply_markup: edited.keyboard });
+      return;
+    }
+    // Штрихкод цифрами — запасной путь, когда с фото он не читается.
+    const typed = parseBarcodeText(ctx.message.text);
+    if (typed && fsLinked()) {
+      const reply =
+        (await foodFromBarcode(typed.code, typed.caption)) ??
+        { text: `🔎 По штрихкоду ${typed.code} ничего нет ни в FatSecret, ни в Open Food Facts — опиши словами, что съел.` };
+      await ctx.reply(reply.text, { reply_markup: reply.keyboard });
       return;
     }
     const intent = await routeText(ctx.message.text, new Date());
