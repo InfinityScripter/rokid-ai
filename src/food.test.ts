@@ -5,7 +5,7 @@ import { test } from 'node:test';
 // без этих переменных завершает процесс.
 import './test-env.js';
 
-import type { FsFood, FsServing } from './fatsecret.js';
+import type { FsFood, FsRegion, FsServing } from './fatsecret.js';
 import { matchFoodItems } from './food.js';
 
 const food = (foodId: string, name: string): FsFood => ({ foodId, name, brand: null, description: '' });
@@ -201,7 +201,37 @@ test('matchFoodByBarcode: ошибки API (нет прав Premier, сеть) �
   assert.match(outcome.fatsecretNote ?? '', /Premier/);
 });
 
-test('matchFoodByBarcode: сначала region=RU, при отказе по скоупу локализации — база по умолчанию', async () => {
+test('matchFoodByBarcode: регион из префикса штрихкода → домашний RU → база по умолчанию', async () => {
+  const calls: (FsRegion | undefined)[] = [];
+  const outcome = await matchFoodByBarcode('5901234123457', undefined, {
+    findFoodId: async (_barcode, region) => {
+      calls.push(region);
+      return null;
+    },
+    lookupOff: async () => null,
+  });
+  assert.deepEqual(calls, [{ region: 'PL' }, { region: 'RU', language: 'ru' }, undefined]);
+  assert.deepEqual(outcome, { kind: 'not_found' });
+});
+
+test('matchFoodByBarcode: российский код — RU один раз, нашли — дальше не ищем', async () => {
+  const calls: (FsRegion | undefined)[] = [];
+  const outcome = await matchFoodByBarcode('4600605030288', undefined, {
+    findFoodId: async (_barcode, region) => {
+      calls.push(region);
+      return '55';
+    },
+    getFood: async () => ({
+      food: { foodId: '55', name: 'Творожное зерно в сливках', brand: 'Простоквашино', description: '' },
+      servings: [serving('s55', 91)],
+    }),
+    chooseFood: async () => ({ foodId: '55', servingId: 's55', units: 1, grams: null }),
+  });
+  assert.deepEqual(calls, [{ region: 'RU', language: 'ru' }]);
+  assert.equal(outcome.kind, 'fatsecret');
+});
+
+test('matchFoodByBarcode: отказ по скоупу локализации — сразу база по умолчанию, регионы дальше не перебираем', async () => {
   const calls: (string | undefined)[] = [];
   const outcome = await matchFoodByBarcode('5901234123457', undefined, {
     findFoodId: async (_barcode, region) => {
@@ -211,8 +241,26 @@ test('matchFoodByBarcode: сначала region=RU, при отказе по с�
     },
     lookupOff: async () => null,
   });
-  assert.deepEqual(calls, ['RU', undefined]);
+  assert.deepEqual(calls, ['PL', undefined]);
   assert.deepEqual(outcome, { kind: 'not_found' });
+});
+
+test('matchFoodByBarcode: регион не поддерживается FatSecret → следующий по списку', async () => {
+  const calls: (string | undefined)[] = [];
+  const outcome = await matchFoodByBarcode('5901234123457', undefined, {
+    findFoodId: async (_barcode, region) => {
+      calls.push(region?.region);
+      if (region?.region === 'PL') throw new Error('FatSecret food.find_id_for_barcode: 21 Invalid region');
+      return region?.region === 'RU' ? '77' : null;
+    },
+    getFood: async () => ({
+      food: { foodId: '77', name: 'Pierogi', brand: null, description: '' },
+      servings: [serving('s77', 200)],
+    }),
+    chooseFood: async () => ({ foodId: '77', servingId: 's77', units: 1, grams: null }),
+  });
+  assert.deepEqual(calls, ['PL', 'RU']);
+  assert.equal(outcome.kind, 'fatsecret');
 });
 
 test('matchFoodByBarcode: нет прав на barcode-API → причина в fatsecretNote, Open Food Facts всё равно спрашивается', async () => {
