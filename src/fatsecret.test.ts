@@ -13,9 +13,8 @@ import './test-env.js';
 process.env.SQLITE_PATH = path.join(mkdtempSync(path.join(os.tmpdir(), 'rokid-ai-fatsecret-test-')), 'test.sqlite');
 
 const { config } = await import('./config.js');
-const { fsFinishLink, fsLinked, fsStartLink, fsUserRequest, mskDayNumber, oauth1BaseString } = await import(
-  './fatsecret.js'
-);
+const { fsFindFoodIdForBarcode, fsFinishLink, fsLinked, fsStartLink, fsUserRequest, isPermissionError, mskDayNumber, oauth1BaseString } =
+  await import('./fatsecret.js');
 
 test('oauth1BaseString: сортировка, RFC3986-кодирование, кириллица', () => {
   const base = oauth1BaseString('POST', 'https://platform.fatsecret.com/rest/server.api', {
@@ -95,4 +94,39 @@ test('fsStartLink → fsFinishLink → fsLinked → fsUserRequest: полный 
   assert.deepEqual(profile, { profile: { user_id: '1' } });
   assert.equal(calls[2].method, 'POST');
   assert.match(calls[2].body, /oauth_token=acc-token/);
+});
+
+test('fsFindFoodIdForBarcode: region/language уходят в запрос, «0» → null, id → строка', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const bodies: string[] = [];
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const href = url.toString();
+    if (href === 'https://oauth.fatsecret.com/connect/token') {
+      return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const body = String(init?.body ?? '');
+    bodies.push(body);
+    const value = body.includes('region=RU') ? '4384' : '0';
+    return new Response(JSON.stringify({ food_id: { value } }), { headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+
+  assert.equal(await fsFindFoodIdForBarcode('5901234123457', { region: 'RU', language: 'ru' }), '4384');
+  assert.match(bodies[0], /method=food.find_id_for_barcode/);
+  assert.match(bodies[0], /barcode=5901234123457/);
+  assert.match(bodies[0], /region=RU/);
+  assert.match(bodies[0], /language=ru/);
+  assert.equal(await fsFindFoodIdForBarcode('5901234123457'), null);
+  assert.doesNotMatch(bodies[1], /region=/);
+});
+
+test('isPermissionError: код 14 / Missing scope / premier — да, «не нашла» и сеть — нет', () => {
+  assert.equal(isPermissionError(new Error("FatSecret food.find_id_for_barcode: 14 Missing scope: scope 'barcode'")), true);
+  assert.equal(isPermissionError(new Error('FatSecret x: 2 This feature requires a premier subscription')), true);
+  assert.equal(isPermissionError(new Error('FatSecret x: HTTP 503')), false);
+  assert.equal(isPermissionError(new Error('fetch failed')), false);
 });

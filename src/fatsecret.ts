@@ -285,12 +285,26 @@ export async function fsGetServings(foodId: string): Promise<FsServing[]> {
 // barcode в формате GTIN-13, ответ {food_id: {value}}; «не нашла» FatSecret
 // отдаёт нулём, а не ошибкой. Метод Premier-exclusive: без одобренного
 // Premier отвечает ошибкой прав — вызывающий код откатывается на фото.
-export async function fsFindFoodIdForBarcode(barcode: string): Promise<string | null> {
-  const data = (await fsApi({ method: 'food.find_id_for_barcode', barcode })) as {
-    food_id?: { value?: string } | string;
-  };
+// region по умолчанию US — без него российский код ищется не в той базе;
+// локализация (region/language) — отдельный скоуп, тоже Premier.
+export type FsRegion = { region: string; language?: string };
+
+export async function fsFindFoodIdForBarcode(barcode: string, region?: FsRegion): Promise<string | null> {
+  const data = (await fsApi({
+    method: 'food.find_id_for_barcode',
+    barcode,
+    ...(region ? { region: region.region, ...(region.language ? { language: region.language } : {}) } : {}),
+  })) as { food_id?: { value?: string } | string };
   const id = typeof data.food_id === 'string' ? data.food_id : data.food_id?.value;
   return id && id !== '0' ? id : null;
+}
+
+// Отказ по правам/скоупу (Premier-функции): код 14 «Missing scope» и
+// формулировки про premier/permission. Отличать от «не нашла» важно —
+// пользователю показывается причина, а не безликое «в FatSecret нет».
+export function isPermissionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Missing scope|: 14 |premier|permission|not (?:allowed|authori[sz]ed)|forbidden/i.test(message);
 }
 
 // Дневник FatSecret — по московскому дню, не по UTC: ужин в 00:30 МСК должен

@@ -188,7 +188,7 @@ test('matchFoodByBarcode: нет ни в одной базе → not_found, мо
   assert.equal(chooseCalled, false);
 });
 
-test('matchFoodByBarcode: ошибки API (нет прав Premier, сеть) → not_found, а не исключение', async () => {
+test('matchFoodByBarcode: ошибки API (нет прав Premier, сеть) → not_found с причиной, а не исключение', async () => {
   const outcome = await matchFoodByBarcode('5901234123457', undefined, {
     findFoodId: async () => {
       throw new Error('FatSecret food.find_id_for_barcode: 14 Missing scope');
@@ -197,5 +197,45 @@ test('matchFoodByBarcode: ошибки API (нет прав Premier, сеть) �
       throw new Error('Open Food Facts: HTTP 503');
     },
   });
+  assert.equal(outcome.kind, 'not_found');
+  assert.match(outcome.fatsecretNote ?? '', /Premier/);
+});
+
+test('matchFoodByBarcode: сначала region=RU, при отказе по скоупу локализации — база по умолчанию', async () => {
+  const calls: (string | undefined)[] = [];
+  const outcome = await matchFoodByBarcode('5901234123457', undefined, {
+    findFoodId: async (_barcode, region) => {
+      calls.push(region?.region);
+      if (region) throw new Error("FatSecret food.find_id_for_barcode: 14 Missing scope: scope 'localization'");
+      return null;
+    },
+    lookupOff: async () => null,
+  });
+  assert.deepEqual(calls, ['RU', undefined]);
   assert.deepEqual(outcome, { kind: 'not_found' });
+});
+
+test('matchFoodByBarcode: нет прав на barcode-API → причина в fatsecretNote, Open Food Facts всё равно спрашивается', async () => {
+  const outcome = await matchFoodByBarcode('5901234123457', undefined, {
+    findFoodId: async () => {
+      throw new Error("FatSecret food.find_id_for_barcode: 14 Missing scope: scope 'barcode'");
+    },
+    lookupOff: async () => ({
+      name: 'Йогурт',
+      brand: null,
+      queryEn: 'yogurt',
+      quantityGrams: null,
+      kcalPer100g: null,
+      proteinPer100g: null,
+      fatPer100g: null,
+      carbsPer100g: null,
+    }),
+    searchFoods: async () => [food('y1', 'Yogurt')],
+    getServings: async () => [serving('sy', 60)],
+    chooseFood: async () => ({ foodId: 'y1', servingId: 'sy', units: 1, grams: null }),
+  });
+  assert.equal(outcome.kind, 'openfoodfacts');
+  if (outcome.kind !== 'openfoodfacts') return;
+  assert.match(outcome.fatsecretNote ?? '', /Premier/);
+  assert.equal(outcome.match.food?.foodId, 'y1');
 });
