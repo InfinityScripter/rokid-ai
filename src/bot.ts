@@ -3,7 +3,13 @@ import { writeFile, rm } from 'node:fs/promises';
 
 import { Bot, InlineKeyboard } from 'grammy';
 
-import { parseBarcodeText, readBarcodeFromPhoto, type BarcodeRead } from './barcode.js';
+import {
+  hasBarcodeKeyword,
+  parseBarcodeText,
+  readBarcodeFromPhoto,
+  stripBarcodeKeyword,
+  type BarcodeRead,
+} from './barcode.js';
 import { caldavListEvents } from './caldav.js';
 import { config } from './config.js';
 import { fsFinishLink, fsLinked, fsStartLink, isInvalidTokenError } from './fatsecret.js';
@@ -37,6 +43,8 @@ let lastUndoKey: string | null = null;
 // «✏️ Поправить»: следующее сообщение владельца — правка этой карточки, а не
 // новая заметка. Одна ожидающая правка на бота (владелец один).
 let pendingFoodEdit: { key: string; meal: FoodMeal; matches: FoodMatch[] } | null = null;
+// /barcode без цифр: следующее фото разбирается только по штрихкоду.
+let barcodeModeArmed = false;
 
 export type IntentReply = { text: string; keyboard?: InlineKeyboard };
 
@@ -151,37 +159,58 @@ async function foodFromBarcode(code: string, caption?: string): Promise<IntentRe
   return { ...card, text: `${how}\n\n${card.text}` };
 }
 
-// Фото еды: сначала штрихкод (точное попадание в базу), при любом сбое —
-// распознавание блюд по снимку, и бот говорит, что именно произошло со
-// штрихкодом: молчаливый откат выглядел как «не распознал».
-export async function foodFromPhoto(imageBase64: string, caption?: string): Promise<IntentReply> {
-  if (!fsLinked()) return photoIntent(imageBase64, caption);
+const BARCODE_TEXT_HINT = 'Можно прислать цифры текстом: «штрихкод 4600605030288».';
+
+// Фото еды. Явный режим (слово «штрихкод» в подписи или /barcode перед
+// фото) — только по коду, без угадывания по снимку: либо продукт, либо
+// честный ответ, почему нет. Неявный — штрихкод пробуем, при любом сбое
+// распознаём по снимку и говорим, что произошло со штрихкодом.
+export async function foodFromPhoto(imageBase64: string, caption?: string, barcodeOnly = false): Promise<IntentReply> {
+  const explicit = barcodeOnly || (caption !== undefined && hasBarcodeKeyword(caption));
+  const cleanCaption = caption === undefined ? undefined : stripBarcodeKeyword(caption);
+  if (!fsLinked()) return photoIntent(imageBase64, cleanCaption);
   let read: BarcodeRead = null;
   try {
     read = await readBarcodeFromPhoto(imageBase64, 'image/jpeg');
   } catch (error) {
     logError('barcode-read', error);
   }
+  if (explicit) {
+    if (read === null) {
+      return {
+        text:
+          '🔎 Штрихкод на фото не нашла. Сфоткай ближе, чтобы полосы и цифры под ними были в кадре целиком. ' +
+          BARCODE_TEXT_HINT,
+      };
+    }
+    if (read === 'unreadable') {
+      return { text: `🔎 Штрихкод вижу, но цифры не разобрать. ${BARCODE_TEXT_HINT}` };
+    }
+    return (
+      (await foodFromBarcode(read.code, cleanCaption)) ?? {
+        text:
+          `🔎 Штрихкод ${read.code} прочитала, но его нет ни в FatSecret, ни в Open Food Facts. ` +
+          'Опиши продукт словами (что и сколько) — подберу по названию.',
+      }
+    );
+  }
   if (read === 'unreadable') {
-    const reply = await photoIntent(imageBase64, caption);
+    const reply = await photoIntent(imageBase64, cleanCaption);
     return {
       ...reply,
-      text:
-        '🔎 Штрихкод на фото есть, но цифры не разобрать — распознаю по снимку. ' +
-        'Можно прислать цифры текстом: «штрихкод 4600000000000».\n\n' +
-        reply.text,
+      text: `🔎 Штрихкод на фото есть, но цифры не разобрать — распознаю по снимку. ${BARCODE_TEXT_HINT}\n\n${reply.text}`,
     };
   }
   if (read) {
-    const byCode = await foodFromBarcode(read.code, caption);
+    const byCode = await foodFromBarcode(read.code, cleanCaption);
     if (byCode) return byCode;
-    const reply = await photoIntent(imageBase64, caption);
+    const reply = await photoIntent(imageBase64, cleanCaption);
     return {
       ...reply,
       text: `🔎 Штрихкод ${read.code} прочитала, но его нет ни в FatSecret, ни в Open Food Facts — распознаю по снимку.\n\n${reply.text}`,
     };
   }
-  return photoIntent(imageBase64, caption);
+  return photoIntent(imageBase64, cleanCaption);
 }
 
 async function showFoodCard(
@@ -400,8 +429,34 @@ bot.command('start', async (ctx) => {
   await ctx.reply(
     'Привет! Я — инбокс очков Rokid.\n' +
       '🎤 Голосовое → разберу встречу, еду или заметку\n' +
-      '📷 Фото еды → определю блюда и порции\n' +
+      '📷 Фото еды → определю блюда и порции; штрихкод на упаковке — найду продукт по нему\n' +
+      '🔎 /barcode → следующее фото только по штрихкоду (или /barcode <цифры>)\n' +
       '✍️ Текст → то же, что и голосовое',
+  );
+});
+
+bot.command('barcode', async (ctx) => {
+  const typed = parseBarcodeText((ctx.match ?? '').trim());
+  if (typed) {
+    if (!fsLinked()) {
+      await ctx.reply('Сначала привяжи аккаунт: /fatsecret_link');
+      return;
+    }
+    try {
+      const reply =
+        (await foodFromBarcode(typed.code, typed.caption)) ??
+        { text: `🔎 По штрихкоду ${typed.code} ничего нет ни в FatSecret, ни в Open Food Facts — опиши словами, что съел.` };
+      await ctx.reply(reply.text, { reply_markup: reply.keyboard });
+    } catch (error) {
+      logError('barcode-command', error);
+      await ctx.reply(`Ошибка: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return;
+  }
+  barcodeModeArmed = true;
+  await ctx.reply(
+    '🔎 Жду фото штрихкода — следующий снимок разберу только по нему, без угадывания. ' +
+      'Или сразу цифрами: /barcode 4600605030288 всю банку',
   );
 });
 
@@ -535,7 +590,9 @@ bot.on('message:photo', async (ctx) => {
     // Подпись к фото («творожные сливки 320 грамм») — самый надёжный сигнал:
     // без неё модель гадает по снимку, часто тёмному ракурсу этикетки.
     const caption = ctx.message.caption?.trim();
-    const reply = await foodFromPhoto(buffer.toString('base64'), caption || undefined);
+    const armed = barcodeModeArmed;
+    barcodeModeArmed = false;
+    const reply = await foodFromPhoto(buffer.toString('base64'), caption || undefined, armed);
     await ctx.reply(reply.text, { reply_markup: reply.keyboard });
   } catch (error) {
     logError('photo', error);

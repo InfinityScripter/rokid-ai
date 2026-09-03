@@ -42,6 +42,19 @@ export function parseBarcodeText(text: string): { code: string; caption: string 
   return { code, caption: match[2]?.trim() || undefined };
 }
 
+// Явный режим «это штрихкод»: слово в подписи к фото. Режим отключает
+// угадывание по снимку — либо продукт по коду, либо честный ответ, почему нет.
+const BARCODE_KEYWORD = /(^|[\s,.;:!])(штрих\s*-?\s*код|баркод|barcode)(?=$|[\s,.;:!])/iu;
+
+export function hasBarcodeKeyword(text: string): boolean {
+  return BARCODE_KEYWORD.test(text);
+}
+
+export function stripBarcodeKeyword(text: string): string | undefined {
+  const rest = text.replace(BARCODE_KEYWORD, '$1').replace(/^[\s,.;:!]+/, '').replace(/\s+/g, ' ').trim();
+  return rest || undefined;
+}
+
 // unreadable — штрихкод на фото есть, но цифры не разобрать (или контрольная
 // сумма не сошлась): бот подскажет прислать цифры текстом. null — штрихкода
 // нет вовсе, обычное фото еды.
@@ -54,6 +67,7 @@ export async function readBarcodeFromPhoto(
   const response = await client.chat.completions.create({
     model: config.ROUTER_MODEL,
     max_tokens: 40,
+    temperature: 0,
     messages: [
       {
         role: 'user',

@@ -33,7 +33,7 @@ test('не штрихкодовая длина и «none» → null', () => {
   assert.equal(normalizeBarcode(''), null);
 });
 
-const { parseBarcodeText, parseOffProduct } = await import('./barcode.js');
+const { hasBarcodeKeyword, parseBarcodeText, parseOffProduct, stripBarcodeKeyword } = await import('./barcode.js');
 
 test('parseBarcodeText: «штрихкод …», голые цифры, хвост — подпись', () => {
   assert.deepEqual(parseBarcodeText('штрихкод 5901234123457'), { code: '5901234123457', caption: undefined });
@@ -80,4 +80,14 @@ test('parseOffProduct: product_name_en важнее категории, нет �
   assert.equal(product?.kcalPer100g, null);
   assert.equal(parseOffProduct({ status: 0 }), null);
   assert.equal(parseOffProduct({ status: 1, product: { brands: 'X' } }), null);
+});
+
+test('ключевое слово режима штрихкода в подписи: ловится и вычищается, остаток — подпись', () => {
+  assert.equal(hasBarcodeKeyword('штрихкод'), true);
+  assert.equal(hasBarcodeKeyword('Штрих-код, всю банку'), true);
+  assert.equal(hasBarcodeKeyword('это barcode'), true);
+  assert.equal(hasBarcodeKeyword('творожные сливки 320 грамм'), false);
+  assert.equal(stripBarcodeKeyword('штрихкод'), undefined);
+  assert.equal(stripBarcodeKeyword('штрихкод, всю банку 320 г'), 'всю банку 320 г');
+  assert.equal(stripBarcodeKeyword('баркод всю банку'), 'всю банку');
 });

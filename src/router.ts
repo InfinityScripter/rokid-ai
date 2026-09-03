@@ -123,6 +123,9 @@ async function callRouter(content: OpenAI.Chat.Completions.ChatCompletionContent
   const response = await client.chat.completions.create({
     model: config.ROUTER_MODEL,
     max_tokens: 1024,
+    // temperature 0: одно и то же фото/фраза должны давать один и тот же
+    // разбор — иначе два подряд снимка одной банки дают разные карточки.
+    temperature: 0,
     tools: [routerTool],
     tool_choice: { type: 'function', function: { name: 'route_intent' } },
     messages: [{ role: 'user', content }],

@@ -33,11 +33,11 @@ export function formatFoodCard(meal: FoodMeal, matches: FoodMatch[]): string {
   const meals = { breakfast: 'завтрак', lunch: 'обед', dinner: 'ужин', other: 'перекус' };
   const lines = matches.map((m) =>
     m.food
-      ? `• ${m.name} (${m.amount}) → ${m.food.foodName}${m.grams ? `, ${m.grams} г` : ''} — ${m.calories} ккал${labelLine(m)}`
+      ? `• ${m.name} (${m.amount}) → ${m.food.foodName}${m.grams ? `, ${m.grams} г` : ''} — ${Math.round(m.calories ?? 0)} ккал${labelLine(m)}`
       : `• ${m.name} (${m.amount}) — ${m.note}`,
   );
   const total = matches.reduce((sum, m) => sum + (m.calories ?? 0), 0);
-  return [`🍽 ${meals[meal]}:`, ...lines, `Итого: ${total} ккал`, 'powered by fatsecret'].join('\n');
+  return [`🍽 ${meals[meal]}:`, ...lines, `Итого: ${Math.round(total)} ккал`, 'powered by fatsecret'].join('\n');
 }
 
 function skippedLine(skipped: string[]): string[] {
