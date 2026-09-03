@@ -1,15 +1,19 @@
 import OpenAI from 'openai';
+import { readBarcodes } from 'zxing-wasm/full';
 
 import { config } from './config.js';
+import { logError } from './log.js';
 
 const client = new OpenAI({
   baseURL: 'https://openrouter.ai/api/v1',
   apiKey: config.OPENROUTER_API_KEY,
 });
 
-// Штрихкод с фото читаем не декодером полос, а цифрами, напечатанными под
-// ними: их видит та же vision-модель, что распознаёт еду, — без новой
-// зависимости. Ошибка чтения на одну цифру отсекается контрольной суммой.
+// Штрихкод с фото сначала декодируется по полосам (zxing, WASM — без
+// нативных зависимостей, JPEG разбирает сам), и только если декодер ничего
+// не нашёл — vision-модель читает цифры под полосами. Модель на идеально
+// чётком штрихкоде отвечала «нет», декодер детерминирован. Ошибка чтения на
+// одну цифру в любом случае отсекается контрольной суммой.
 
 // Контрольная сумма GTIN (EAN-8, UPC-A/GTIN-12, EAN-13) — единый алгоритм:
 // справа налево веса 3,1,3,1…, контрольная цифра дополняет сумму до десятка.
@@ -55,6 +59,24 @@ export function stripBarcodeKeyword(text: string): string | undefined {
   return rest || undefined;
 }
 
+// UPC-E не берём: zxing отдаёт его 8-значным с чужой контрольной суммой, а
+// базам нужен развёрнутый UPC-A; в России он и не встречается.
+const DECODER_FORMATS = ['EAN-13', 'EAN-8', 'UPC-A'] as const;
+
+export async function decodeBarcodeImage(image: Buffer): Promise<string | null> {
+  const results = await readBarcodes(new Blob([new Uint8Array(image)]), {
+    formats: [...DECODER_FORMATS],
+    tryHarder: true,
+    tryRotate: true,
+    tryInvert: true,
+  });
+  for (const result of results) {
+    const code = normalizeBarcode(result.text);
+    if (code) return code;
+  }
+  return null;
+}
+
 // unreadable — штрихкод на фото есть, но цифры не разобрать (или контрольная
 // сумма не сошлась): бот подскажет прислать цифры текстом. null — штрихкода
 // нет вовсе, обычное фото еды.
@@ -64,6 +86,13 @@ export async function readBarcodeFromPhoto(
   imageBase64: string,
   mediaType: 'image/jpeg' | 'image/png',
 ): Promise<BarcodeRead> {
+  try {
+    const decoded = await decodeBarcodeImage(Buffer.from(imageBase64, 'base64'));
+    if (decoded) return { code: decoded };
+  } catch (error) {
+    // Декодер — ускорение, не единственный путь: при сбое WASM едем дальше.
+    logError('barcode-decoder', error);
+  }
   const response = await client.chat.completions.create({
     model: config.ROUTER_MODEL,
     max_tokens: 40,
@@ -76,10 +105,10 @@ export async function readBarcodeFromPhoto(
           {
             type: 'text',
             text:
-              'Есть ли на фото штрихкод товара с цифрами под полосами (EAN-13, EAN-8 или UPC)? ' +
-              'Если да и цифры читаются целиком — ответь ТОЛЬКО этими цифрами подряд, без пробелов и слов. ' +
+              'На фото может быть штрихкод товара (EAN-13, EAN-8 или UPC) — полосы и напечатанные под ними цифры. ' +
+              'Перепиши эти цифры: ответь ТОЛЬКО цифрами подряд, без пробелов и слов. ' +
               'Если штрихкод есть, но цифры не читаются полностью (темно, размыто, обрезано) — ответь одним словом: unreadable. ' +
-              'Если штрихкода на фото нет — ответь одним словом: none.',
+              'Если штрихкода на фото нет — ответь одним словом: none. Не отвечай другими словами.',
           },
         ],
       },
@@ -88,7 +117,10 @@ export async function readBarcodeFromPhoto(
   const answer = (response.choices[0]?.message.content ?? '').trim().toLowerCase();
   const code = normalizeBarcode(answer);
   if (code) return { code };
-  return answer.includes('unreadable') || /\d{8,}/.test(answer) ? 'unreadable' : null;
+  // Модель иногда отвечает по-русски вопреки инструкции: «размыто», «не
+  // читается» — это unreadable, а «нет»/«none» — штрихкода нет.
+  const unreadable = /unreadable|размыт|не\s*чита|не\s*разобр|обрез|темн/u.test(answer) || /\d{8,}/.test(answer);
+  return unreadable ? 'unreadable' : null;
 }
 
 // Open Food Facts — открытая база штрихкодов с российскими товарами и КБЖУ с

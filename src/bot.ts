@@ -435,7 +435,7 @@ bot.command('start', async (ctx) => {
   );
 });
 
-bot.command('barcode', async (ctx) => {
+bot.command(['barcode', 'barkode', 'shtrihkod'], async (ctx) => {
   const typed = parseBarcodeText((ctx.match ?? '').trim());
   if (typed) {
     if (!fsLinked()) {
@@ -600,7 +600,20 @@ bot.on('message:photo', async (ctx) => {
   }
 });
 
+// Список для меню команд Telegram (автодополнение по «/») и для ответа на
+// незнакомую команду — чтобы опечатка вроде /barkode не уезжала в заметки.
+export const BOT_COMMANDS = [
+  { command: 'barcode', description: 'Следующее фото — только по штрихкоду (или /barcode <цифры>)' },
+  { command: 'notes', description: 'Последние заметки' },
+  { command: 'fatsecret_link', description: 'Привязать аккаунт FatSecret' },
+  { command: 'start', description: 'Что умеет бот' },
+];
+
 bot.on('message:text', async (ctx) => {
+  if (ctx.message.text.startsWith('/')) {
+    await ctx.reply(`Не знаю такой команды. Есть: ${BOT_COMMANDS.map((c) => `/${c.command}`).join(', ')}`);
+    return;
+  }
   try {
     const edited = await maybeApplyFoodEdit(ctx.message.text);
     if (edited) {

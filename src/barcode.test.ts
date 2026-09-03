@@ -91,3 +91,22 @@ test('ключевое слово режима штрихкода в подпи�
   assert.equal(stripBarcodeKeyword('штрихкод, всю банку 320 г'), 'всю банку 320 г');
   assert.equal(stripBarcodeKeyword('баркод всю банку'), 'всю банку');
 });
+
+test('decodeBarcodeImage: EAN-13, нарисованный zxing, декодируется обратно из PNG-байтов', async () => {
+  const { writeBarcode } = await import('zxing-wasm/full');
+  const { decodeBarcodeImage } = await import('./barcode.js');
+  const written = await writeBarcode('4600605030288', { format: 'EAN-13', sizeHint: 600, withQuietZones: true });
+  assert.ok(written.image, written.error);
+  const png = Buffer.from(await written.image!.arrayBuffer());
+  assert.equal(await decodeBarcodeImage(png), '4600605030288');
+});
+
+test('decodeBarcodeImage: картинка без штрихкода → null', async () => {
+  const { decodeBarcodeImage } = await import('./barcode.js');
+  // 1×1 PNG без полос — декодеру нечего читать.
+  const blank = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+    'base64',
+  );
+  assert.equal(await decodeBarcodeImage(blank), null);
+});

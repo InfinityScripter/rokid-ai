@@ -27,7 +27,8 @@
 - Календари: `events.ts` → `calendar.ts` (osascript, mac) или `caldav.ts`
   (iCloud) + `queue.ts`/`bridge.ts` (рабочие события через Мак).
 - Еда: `fatsecret.ts` (OAuth 1.0/2.0 руками), `food.ts` (подбор по базе),
-  `food-buffer.ts` (буфер до одобрения Premier Free).
+  `food-buffer.ts` (буфер до одобрения Premier Free), `barcode.ts` (zxing-wasm
+  → модель как запасной путь, Open Food Facts для российских товаров).
 - `meeting.ts` — саммари длинных записей; `notes.ts` — заметки (JSONL).
 
 ## Конвенции
