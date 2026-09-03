@@ -133,6 +133,9 @@ export type OffProduct = {
   queryEn: string;
   quantityGrams: number | null;
   kcalPer100g: number | null;
+  proteinPer100g: number | null;
+  fatPer100g: number | null;
+  carbsPer100g: number | null;
 };
 
 export type OffRaw = {
@@ -165,14 +168,20 @@ export function parseOffProduct(raw: OffRaw): OffProduct | null {
   // Без \b: в JS-регулярке без флага u граница слова — только ASCII, после
   // кириллической «г» она не срабатывает и «320 г» терялось.
   const quantity = product.quantity?.match(/(\d+(?:[.,]\d+)?)\s*(?:гр|г|ml|мл|g)(?!\p{L})/iu);
-  const kcalRaw = product.nutriments?.['energy-kcal_100g'];
-  const kcal = typeof kcalRaw === 'string' ? Number(kcalRaw) : kcalRaw;
+  const nutrient = (key: string): number | null => {
+    const raw = product.nutriments?.[key];
+    const value = typeof raw === 'string' ? Number(raw) : raw;
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  };
   return {
     name,
     brand,
     queryEn,
     quantityGrams: quantity ? Number(quantity[1].replace(',', '.')) : null,
-    kcalPer100g: typeof kcal === 'number' && Number.isFinite(kcal) ? kcal : null,
+    kcalPer100g: nutrient('energy-kcal_100g'),
+    proteinPer100g: nutrient('proteins_100g'),
+    fatPer100g: nutrient('fat_100g'),
+    carbsPer100g: nutrient('carbohydrates_100g'),
   };
 }
 

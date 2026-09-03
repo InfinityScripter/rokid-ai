@@ -11,7 +11,10 @@ const client = new OpenAI({
   apiKey: config.OPENROUTER_API_KEY,
 });
 
-export type FoodItem = { name: string; amount: string; query: string };
+// labelHint — КБЖУ с этикетки (штрихкод → Open Food Facts): подбор аналога
+// идёт по составу, а не по похожести названия — иначе «творожное зерно»
+// превращалось в «2% Fat Milk».
+export type FoodItem = { name: string; amount: string; query: string; labelHint?: string };
 
 export type FoodMeal = 'breakfast' | 'lunch' | 'dinner' | 'other';
 
@@ -87,8 +90,12 @@ async function chooseFoodAndServing(
         role: 'user',
         content:
           `Продукт из голосовой заметки: «${item.name}», порция словами: «${item.amount}» ` +
-          `(поисковый запрос: "${item.query}").\n\n` +
-          `Кандидаты из базы FatSecret вместе с их сервингами (порциями):\n` +
+          `(поисковый запрос: "${item.query}").\n` +
+          (item.labelHint
+            ? `${item.labelHint}\nВыбирай кандидата, чьи калории и БЖУ на 100 г ближе всего к этикетке — ` +
+              'состав важнее похожести названия.\n'
+            : '') +
+          `\nКандидаты из базы FatSecret вместе с их сервингами (порциями):\n` +
           `${JSON.stringify(candidates, null, 2)}\n\n` +
           'Выбери один food_id и один serving_id — servingId ОБЯЗАН принадлежать выбранному foodId ' +
           '(сравни по кандидату в списке, не смешивай сервинги разных продуктов). Смотри на name/brand/' +
@@ -231,7 +238,7 @@ export async function matchFoodItems(items: FoodItem[], deps: MatchFoodDeps = {}
   const results: FoodMatch[] = [];
   for (const item of items) {
     try {
-      const found = await searchFoods(item.query, 5);
+      const found = await searchFoods(item.query, item.labelHint ? 8 : 5);
       if (found.length === 0) {
         results.push(notFound(item, 'не нашла в базе'));
         continue;
@@ -240,8 +247,9 @@ export async function matchFoodItems(items: FoodItem[], deps: MatchFoodDeps = {}
       // Топ-3, а не только первый кандидат: первый по релевантности поиска
       // не всегда правильный продукт (бренд, другой вид блюда) — модели
       // нужны сервинги нескольких кандидатов, чтобы реально выбирать, а не
-      // просто утверждать первый вариант.
-      const topCandidates = found.slice(0, 3);
+      // просто утверждать первый вариант. С этикеткой — шире: подбор по
+      // составу выигрывает от выбора.
+      const topCandidates = found.slice(0, item.labelHint ? 5 : 3);
       const servingsByCandidate = await Promise.all(topCandidates.map((food) => getServings(food.foodId)));
       const candidates: CandidateWithServings[] = topCandidates.map((food, i) => ({
         food,
@@ -297,7 +305,9 @@ async function translateToEnglishQuery(name: string): Promise<string> {
         role: 'user',
         content:
           `Название продукта с этикетки: «${name}». Дай короткий английский запрос для поиска ` +
-          'в американской базе продуктов (2–4 слова, без бренда). Ответь только запросом.',
+          'в американской базе продуктов (1–3 слова, без бренда) — обычное американское название ' +
+          'категории, не дословный перевод: «творожное зерно в сливках» → cottage cheese, «сметана» → ' +
+          'sour cream, «творожный сыр» → cream cheese, «кефир» → kefir. Ответь только запросом.',
       },
     ],
   });
@@ -359,10 +369,17 @@ export async function matchFoodByBarcode(
   try {
     const product = await lookupOff(barcode);
     if (!product) return { kind: 'not_found' };
+    const label = [
+      product.kcalPer100g !== null ? `${product.kcalPer100g} ккал` : null,
+      product.proteinPer100g !== null ? `белки ${product.proteinPer100g} г` : null,
+      product.fatPer100g !== null ? `жиры ${product.fatPer100g} г` : null,
+      product.carbsPer100g !== null ? `углеводы ${product.carbsPer100g} г` : null,
+    ].filter(Boolean);
     const item: FoodItem = {
       name: product.brand ? `${product.brand} ${product.name}` : product.name,
       amount: caption?.trim() || (product.quantityGrams ? `упаковка ${product.quantityGrams} г` : '1 упаковка'),
       query: CYRILLIC.test(product.queryEn) ? await translate(product.queryEn) : product.queryEn,
+      labelHint: label.length > 0 ? `Этикетка (на 100 г): ${label.join(', ')}.` : undefined,
     };
     const [match] = await matchFoodItems([item], {
       searchFoods: deps.searchFoods,

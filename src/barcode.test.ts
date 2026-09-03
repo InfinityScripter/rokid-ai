@@ -58,7 +58,7 @@ test('parseOffProduct: имя, бренд, граммы упаковки, кка
       brands: 'Савушкин, Savushkin',
       quantity: '320 г',
       categories_tags: ['en:dairies', 'en:cheeses', 'en:cottage-cheeses'],
-      nutriments: { 'energy-kcal_100g': 143, proteins_100g: '9.5' },
+      nutriments: { 'energy-kcal_100g': 143, proteins_100g: '9.5', fat_100g: 5, carbohydrates_100g: '2.6' },
     },
   });
   assert.deepEqual(product, {
@@ -67,6 +67,9 @@ test('parseOffProduct: имя, бренд, граммы упаковки, кка
     queryEn: 'cottage cheeses',
     quantityGrams: 320,
     kcalPer100g: 143,
+    proteinPer100g: 9.5,
+    fatPer100g: 5,
+    carbsPer100g: 2.6,
   });
 });
 

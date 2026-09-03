@@ -143,6 +143,9 @@ test('matchFoodByBarcode: нет в FatSecret → Open Food Facts → анало
       queryEn: 'творожное зерно в сливках',
       quantityGrams: 320,
       kcalPer100g: 143,
+      proteinPer100g: 9,
+      fatPer100g: 5,
+      carbsPer100g: 2.6,
     }),
     // Русское имя с этикетки → перевод для поиска (у российских карточек
     // Open Food Facts английского имени обычно нет).
@@ -157,6 +160,9 @@ test('matchFoodByBarcode: нет в FatSecret → Open Food Facts → анало
     getServings: async () => [serving('s900', 98)],
     chooseFood: async (item) => {
       assert.equal(item.amount, 'упаковка 320 г');
+      // Подсказка по этикетке доезжает до подбора — по ней модель выбирает
+      // кандидата по составу, а не по названию.
+      assert.equal(item.labelHint, 'Этикетка (на 100 г): 143 ккал, белки 9 г, жиры 5 г, углеводы 2.6 г.');
       return { foodId: '900', servingId: 's900', units: 3.2, grams: 320 };
     },
   });
