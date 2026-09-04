@@ -24,7 +24,7 @@ import {
   type FoodMeal,
 } from './food.js';
 import { formatEventLine, formatFoodCard, formatIntent, pluralRu } from './format.js';
-import { formatGoal, loadGoal, parseGoal, saveGoal } from './goal.js';
+import { formatGoal, loadGoal, parseGoal, saveGoal, withKcal, type Goal } from './goal.js';
 import { log, logError } from './log.js';
 import { splitTranscript, summarizeMeeting, transcribeLong } from './meeting.js';
 import { PendingState } from './pending.js';
@@ -59,7 +59,77 @@ let lastUndoKey: string | null = null;
 const BUTTON_BARCODE = '🔎 Штрихкод';
 const BUTTON_PHOTO = '📷 Фото еды';
 const BUTTON_SUMMARY = '📊 Итоги дня';
-const MAIN_KEYBOARD = new Keyboard().text(BUTTON_BARCODE).text(BUTTON_PHOTO).row().text(BUTTON_SUMMARY).resized().persistent();
+const BUTTON_WEEK = '📈 Неделя';
+const BUTTON_GOAL = '🎯 Норма';
+const BUTTON_HELP = '❓ Помощь';
+// Постоянная клавиатура — всё, что делается чаще раза в неделю, без команд.
+const MAIN_KEYBOARD = new Keyboard()
+  .text(BUTTON_BARCODE)
+  .text(BUTTON_PHOTO)
+  .row()
+  .text(BUTTON_SUMMARY)
+  .text(BUTTON_WEEK)
+  .row()
+  .text(BUTTON_GOAL)
+  .text(BUTTON_HELP)
+  .resized()
+  .persistent();
+
+function linkKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text('🔗 Привязать FatSecret', 'link:start');
+}
+
+// Привязка FatSecret без команд: кнопка → ссылка → PIN обычным сообщением.
+// Флаг в памяти: привязка — разовое дело, перезапуск между шагами маловероятен.
+let linkPending = false;
+
+async function startLinkReply(): Promise<IntentReply> {
+  try {
+    const { authorizeUrl } = await fsStartLink();
+    linkPending = true;
+    return {
+      text:
+        `Открой ссылку, разреши доступ и пришли PIN обычным сообщением (просто цифры):\n${authorizeUrl}`,
+    };
+  } catch (error) {
+    logError('fatsecret_link', error);
+    return { text: `Не смогла запросить ссылку у FatSecret: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+async function finishLinkReply(pin: string): Promise<IntentReply> {
+  try {
+    await fsFinishLink(pin);
+    linkPending = false;
+    return {
+      text: '✅ Аккаунт FatSecret привязан — теперь могу писать в твой дневник и считать итоги.',
+      keyboard: new InlineKeyboard().text('🎯 Норма', 'goal:show').text('📊 Итоги дня', `summary:${diaryDate(new Date())}`),
+    };
+  } catch (error) {
+    logError('fatsecret_pin', error);
+    return { text: `Не смогла привязать аккаунт: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+function helpReply(): IntentReply {
+  const linked = fsLinked();
+  const text = [
+    'Что умею:',
+    '🎤 Голосовое или текст → встречу в календарь, еду в FatSecret («на обед борщ и два тоста»),',
+    '   «сколько я сегодня съел», «что я ел вчера», «поставь норму 2200», «отмени последнюю запись», «что у меня завтра»',
+    '📷 Фото еды → карточка с блюдами и порциями; штрихкод на упаковке найду сама',
+    '🔎 Штрихкод → следующее фото только по коду (или /barcode 4600605030288 всю банку)',
+    '📊 Итоги дня → ккал, БЖУ, остаток до нормы; кнопки ◀️ ▶️ по дням (или /summary вчера)',
+    '📈 Неделя → итоги по дням за 7 дней и среднее',
+    '🎯 Норма → кнопками или /goal 2200 (с БЖУ: /goal 2200 б150 ж70 у200)',
+    '🌙 До 04:00 еда пишется на вчера; «вчера на ужин …» тоже понимаю',
+    '⏰ Сама напомню в 14:30 и 21:30 по Москве, что записано и чего не хватает',
+    linked ? '🔗 FatSecret привязан ✓' : '🔗 FatSecret не привязан — без него еда не запишется',
+  ].join('\n');
+  const keyboard = new InlineKeyboard().text('🎯 Норма', 'goal:show').text('📊 Итоги дня', `summary:${diaryDate(new Date())}`);
+  if (!linked) keyboard.row().text('🔗 Привязать FatSecret', 'link:start');
+  return { text, keyboard };
+}
 
 function armBarcodeMode(): string {
   state.setBarcodeArmed(true);
@@ -280,32 +350,55 @@ export async function foodFromPhoto(imageBase64: string, caption?: string, barco
 // Итоги дня по дневнику FatSecret — кнопка, /summary и голосом; под ними
 // кнопки соседних дней и недели.
 async function daySummaryReply(date?: string): Promise<IntentReply> {
-  if (!fsLinked()) return { text: 'Сначала привяжи аккаунт: /fatsecret_link' };
+  if (!fsLinked()) return { text: 'Сначала привяжи аккаунт FatSecret — одна кнопка и PIN.', keyboard: linkKeyboard() };
   const today = diaryDate(new Date());
   const day = date ?? today;
   return { text: await foodDaySummary(day, 'manual'), keyboard: summaryKeyboard(day, today) };
 }
 
-// /goal без аргумента — показать норму; «/goal 2200 б150 ж70 у200» — задать;
-// «/goal off» — убрать. Остаток до нормы появляется в итогах и после записи.
-async function setGoalReply(arg: string): Promise<IntentReply> {
-  if (!arg.trim()) {
-    const current = loadGoal();
-    return {
-      text: current
-        ? `🎯 Норма: ${formatGoal(current)}. Изменить: /goal 2200 (можно с БЖУ: /goal 2200 б150 ж70 у200), убрать: /goal off.`
-        : 'Норма не задана. Задай: /goal 2200 — тогда в итогах будет остаток до нормы (можно с БЖУ: /goal 2200 б150 ж70 у200).',
-    };
+// Панель нормы: текущая норма, остаток за сегодня и кнопки −100/+100,
+// пресеты, «убрать». Точнее или с БЖУ — текстом (/goal 2200 б150 ж70 у200).
+const GOAL_PRESETS = [1800, 2000, 2200, 2500];
+
+function goalKeyboard(goal: Goal | null): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  if (goal) keyboard.text('−100', 'goal:adj:-100').text('+100', 'goal:adj:100').row();
+  for (const preset of GOAL_PRESETS) {
+    keyboard.text(goal?.kcal === preset ? `${preset} ✓` : String(preset), `goal:set:${preset}`);
   }
+  keyboard.row();
+  if (goal) keyboard.text('✖️ Убрать норму', 'goal:off');
+  keyboard.text('📊 Итоги дня', `summary:${diaryDate(new Date())}`);
+  if (!fsLinked()) keyboard.row().text('🔗 Привязать FatSecret', 'link:start');
+  return keyboard;
+}
+
+async function goalPanel(): Promise<IntentReply> {
+  const goal = loadGoal();
+  const totals = goal && fsLinked() ? await dayTotalsLine(diaryDate(new Date())) : null;
+  const text = [
+    goal ? `🎯 Норма: ${formatGoal(goal)}.` : '🎯 Норма не задана — выбери кнопкой, и в итогах появится остаток до неё.',
+    totals,
+    'Точнее или с БЖУ — текстом: /goal 2150 или /goal 2200 б150 ж70 у200.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return { text, keyboard: goalKeyboard(goal) };
+}
+
+// «/goal 2200 б150 ж70 у200» — задать, «/goal off» — убрать, без аргумента —
+// панель с кнопками.
+async function setGoalReply(arg: string): Promise<IntentReply> {
+  if (!arg.trim()) return goalPanel();
   const goal = parseGoal(arg);
   if (goal === 'invalid') {
-    return { text: 'Не поняла норму. Пример: /goal 2200 или /goal 2200 б150 ж70 у200; убрать — /goal off.' };
+    return {
+      text: 'Не поняла норму. Пример: /goal 2200 или /goal 2200 б150 ж70 у200; убрать — /goal off.',
+      keyboard: goalKeyboard(loadGoal()),
+    };
   }
   saveGoal(goal);
-  if (!goal) return { text: '🎯 Норму убрала — в итогах будет только факт.' };
-  const today = diaryDate(new Date());
-  const totals = fsLinked() ? await dayTotalsLine(today) : null;
-  return { text: [`🎯 Норма: ${formatGoal(goal)}.`, totals].filter(Boolean).join('\n') };
+  return goalPanel();
 }
 
 async function showFoodCard(
@@ -314,7 +407,7 @@ async function showFoodCard(
   date?: string,
 ): Promise<IntentReply> {
   if (!fsLinked()) {
-    return { text: 'Сначала привяжи аккаунт: /fatsecret_link' };
+    return { text: 'Сначала привяжи аккаунт FatSecret — одна кнопка и PIN.', keyboard: linkKeyboard() };
   }
   const matches = await matchFoodItems(items);
   return buildFoodCard(meal, matches, { date });
@@ -546,6 +639,34 @@ bot.callbackQuery(/^summary:(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
   }
 });
 
+bot.callbackQuery(/^goal:(show|adj|set|off)(?::(-?\d+))?$/, async (ctx) => {
+  const kind = ctx.match[1];
+  const value = Number(ctx.match[2] ?? 0);
+  if (kind === 'show') {
+    await ctx.answerCallbackQuery();
+    const panel = await goalPanel();
+    await ctx.reply(panel.text, { reply_markup: panel.keyboard });
+    return;
+  }
+  const current = loadGoal();
+  const next = kind === 'off' ? null : kind === 'set' ? withKcal(current, value) : withKcal(current, (current?.kcal ?? 2000) + value);
+  saveGoal(next);
+  await ctx.answerCallbackQuery({ text: next ? `Норма ${next.kcal} ккал` : 'Норму убрала' });
+  const panel = await goalPanel();
+  try {
+    await ctx.editMessageText(panel.text, { reply_markup: panel.keyboard });
+  } catch (error) {
+    // Тот же пресет второй раз: Telegram отвергает правку без изменений.
+    logError('goal', error);
+  }
+});
+
+bot.callbackQuery('link:start', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const reply = await startLinkReply();
+  await ctx.reply(reply.text, { reply_markup: reply.keyboard });
+});
+
 bot.callbackQuery('summary-week', async (ctx) => {
   await ctx.answerCallbackQuery({ text: 'Считаю неделю…' });
   try {
@@ -575,19 +696,14 @@ async function downloadTelegramFile(fileId: string): Promise<{ buffer: Buffer; r
   return { buffer: Buffer.from(await res.arrayBuffer()), remotePath: file.file_path };
 }
 
-bot.command('start', async (ctx) => {
-  await ctx.reply(
-    'Привет! Я — инбокс очков Rokid.\n' +
-      '🎤 Голосовое → разберу встречу или еду; «сколько я сегодня съел» → итоги дня\n' +
-      '📷 Фото еды → определю блюда и порции; штрихкод на упаковке — найду продукт по нему\n' +
-      '🔎 Кнопка «Штрихкод» (или /barcode) → следующее фото только по штрихкоду\n' +
-      '✍️ Текст → то же, что и голосовое\n' +
-      '📊 Кнопка «Итоги дня» (или /summary, /summary вчера) → что записано в FatSecret; ' +
-      'сама напомню в 14:30 и 21:30 по Москве\n' +
-      '🌙 До 04:00 еда пишется на вчерашний день; «вчера на ужин …» — тоже понимаю\n' +
-      '🎯 /goal 2200 → норма, в итогах будет остаток до неё',
-    { reply_markup: MAIN_KEYBOARD },
-  );
+// /start показывает постоянную клавиатуру (у сообщения одна разметка,
+// поэтому inline-кнопки помощи — отдельным сообщением).
+bot.command(['start', 'help'], async (ctx) => {
+  const help = helpReply();
+  await ctx.reply(`Привет! Я — инбокс очков Rokid. Кнопки внизу — всё основное.\n\n${help.text}`, {
+    reply_markup: MAIN_KEYBOARD,
+  });
+  if (help.keyboard) await ctx.reply('Быстрые действия:', { reply_markup: help.keyboard });
 });
 
 bot.command(['barcode', 'barkode', 'shtrihkod'], async (ctx) => {
@@ -630,30 +746,18 @@ bot.command(['summary', 'itogi', 'today'], async (ctx) => {
 });
 
 bot.command('fatsecret_link', async (ctx) => {
-  try {
-    const { authorizeUrl } = await fsStartLink();
-    await ctx.reply(
-      `Открой ссылку, разреши доступ и пришли PIN командой /fatsecret_pin <код>:\n${authorizeUrl}`,
-    );
-  } catch (error) {
-    logError('fatsecret_link', error);
-    await ctx.reply(`Не смогла запросить ссылку у FatSecret: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  const reply = await startLinkReply();
+  await ctx.reply(reply.text, { reply_markup: reply.keyboard });
 });
 
 bot.command('fatsecret_pin', async (ctx) => {
   const pin = (ctx.match ?? '').trim();
   if (!pin) {
-    await ctx.reply('Нужен код: /fatsecret_pin 123456');
+    await ctx.reply('Нужен код: /fatsecret_pin 123456 (или просто пришли цифры после ссылки)');
     return;
   }
-  try {
-    await fsFinishLink(pin);
-    await ctx.reply('✅ Аккаунт FatSecret привязан — теперь могу писать в твой дневник.');
-  } catch (error) {
-    logError('fatsecret_pin', error);
-    await ctx.reply(`Не смогла привязать аккаунт: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  const reply = await finishLinkReply(pin);
+  await ctx.reply(reply.text, { reply_markup: reply.keyboard });
 });
 
 // Запись длиннее порога — встреча: расшифровка частями и саммари вместо
@@ -757,7 +861,8 @@ export const BOT_COMMANDS = [
   { command: 'summary', description: 'Итоги дня по еде: ккал, БЖУ, чего не хватает (/summary вчера, 3 сентября)' },
   { command: 'goal', description: 'Дневная норма: /goal 2200 (с БЖУ: /goal 2200 б150 ж70 у200), /goal off' },
   { command: 'fatsecret_link', description: 'Привязать аккаунт FatSecret' },
-  { command: 'start', description: 'Что умеет бот' },
+  { command: 'help', description: 'Что умеет бот и какие есть кнопки' },
+  { command: 'start', description: 'Показать кнопки' },
 ];
 
 bot.on('message:text', async (ctx) => {
@@ -775,6 +880,30 @@ bot.on('message:text', async (ctx) => {
   }
   if (text === BUTTON_SUMMARY) {
     const reply = await daySummaryReply();
+    await ctx.reply(reply.text, { reply_markup: reply.keyboard ?? MAIN_KEYBOARD });
+    return;
+  }
+  if (text === BUTTON_WEEK) {
+    if (!fsLinked()) {
+      await ctx.reply('Сначала привяжи аккаунт FatSecret — одна кнопка и PIN.', { reply_markup: linkKeyboard() });
+      return;
+    }
+    await ctx.reply(await foodWeekSummary(), { reply_markup: weekKeyboard(diaryDate(new Date())) });
+    return;
+  }
+  if (text === BUTTON_GOAL) {
+    const panel = await goalPanel();
+    await ctx.reply(panel.text, { reply_markup: panel.keyboard });
+    return;
+  }
+  if (text === BUTTON_HELP) {
+    const help = helpReply();
+    await ctx.reply(help.text, { reply_markup: help.keyboard });
+    return;
+  }
+  // PIN после ссылки привязки — просто цифры, без команды.
+  if (linkPending && /^\d{4,10}$/.test(text)) {
+    const reply = await finishLinkReply(text);
     await ctx.reply(reply.text, { reply_markup: reply.keyboard ?? MAIN_KEYBOARD });
     return;
   }

@@ -48,6 +48,13 @@ export function parseGoal(text: string): Goal | null | 'invalid' {
   return goal;
 }
 
+// Кнопки «−100 / +100 / 2200»: меняют только ккал, БЖУ остаются; границы те
+// же, что у parseGoal.
+export function withKcal(current: Goal | null, kcal: number): Goal {
+  const clamped = Math.min(10_000, Math.max(500, Math.round(kcal)));
+  return { ...(current ?? {}), kcal: clamped };
+}
+
 export function formatGoal(goal: Goal): string {
   const macros = [
     goal.protein !== undefined ? `Б ${goal.protein} г` : null,
