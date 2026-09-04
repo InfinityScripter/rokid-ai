@@ -211,11 +211,11 @@ export function summaryKeyboard(date: string, today: string): InlineKeyboard {
   if (dayNumberFromDate(date) < dayNumberFromDate(today)) {
     keyboard.text(`${ruDateShort(shiftDate(date, 1))} ▶️`, `summary:${shiftDate(date, 1)}`);
   }
-  return keyboard.row().text('📈 Неделя', 'summary-week');
+  return keyboard.row().text('📈 Неделя', 'summary-week').text('🎯 Норма', 'goal:show');
 }
 
 export function weekKeyboard(today: string): InlineKeyboard {
-  return new InlineKeyboard().text(`📊 ${ruDateShort(today)}`, `summary:${today}`);
+  return new InlineKeyboard().text(`📊 ${ruDateShort(today)}`, `summary:${today}`).text('🎯 Норма', 'goal:show');
 }
 
 function errorText(error: unknown): string {

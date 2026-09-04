@@ -8,7 +8,7 @@ import './test-env.js';
 
 process.env.SQLITE_PATH = path.join(mkdtempSync(path.join(os.tmpdir(), 'rokid-ai-goal-test-')), 'test.sqlite');
 
-const { formatGoal, goalLine, loadGoal, parseGoal, saveGoal } = await import('./goal.js');
+const { formatGoal, goalLine, loadGoal, parseGoal, saveGoal, withKcal } = await import('./goal.js');
 
 test('parseGoal: ккал, ккал с БЖУ в разных написаниях, сброс, мусор и нереальные значения', () => {
   assert.deepEqual(parseGoal('2200'), { kcal: 2200 });
@@ -42,4 +42,11 @@ test('saveGoal/loadGoal: переживает перезапуск, сброс �
   assert.deepEqual(loadGoal(), { kcal: 2200, protein: 150 });
   saveGoal(null);
   assert.equal(loadGoal(), null);
+});
+
+test('withKcal: меняет ккал, сохраняет БЖУ, держит границы', () => {
+  assert.deepEqual(withKcal({ kcal: 2200, protein: 150 }, 2300), { kcal: 2300, protein: 150 });
+  assert.deepEqual(withKcal(null, 2000), { kcal: 2000 });
+  assert.deepEqual(withKcal({ kcal: 600 }, 400), { kcal: 500 });
+  assert.deepEqual(withKcal({ kcal: 9950 }, 10_050), { kcal: 10_000 });
 });

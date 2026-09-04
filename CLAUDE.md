@@ -16,10 +16,13 @@
 
 ## Карта кода
 
-- `src/bot.ts` — Telegram: обработчики сообщений, карточки с кнопками,
-  `applyIntent` (единая точка исполнения намерений — её зовут и инбокс-ручки).
-- `src/router.ts` — интенты: `calendar_event`, `food_log`, `meeting_audio`,
-  `note`, `cancel_last`, `agenda`; схемы zod + tool-use через OpenRouter.
+- `src/bot.ts` — Telegram: обработчики сообщений, постоянная клавиатура
+  (штрихкод / фото / итоги / неделя / норма / помощь), карточки с кнопками,
+  панель нормы, привязка FatSecret кнопкой, `applyIntent` (единая точка
+  исполнения намерений — её зовут и инбокс-ручки).
+- `src/router.ts` — интенты: `calendar_event`, `food_log` (+`date`),
+  `food_summary`, `food_goal`, `meeting_audio`, `other`, `cancel_last`,
+  `agenda`; схемы zod + tool-use через OpenRouter.
 - `src/inbox.ts` — HTTP-инбокс (только 127.0.0.1, наружу — nginx с TLS);
   ручки: `/glasses/chat` (SSE, `src/glasses.ts`), `/sse` (AIUI-агент),
   `/chat/completions` (`src/openai-compat.ts`), `/agenda`, `/vision/*`
