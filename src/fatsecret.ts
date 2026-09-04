@@ -213,6 +213,10 @@ export type FsServing = {
   servingId: string;
   description: string;
   grams: number | null;
+  // Сколько единиц измерения в этой порции: «100 g» → 100, «1 cup» → 1.
+  // FatSecret в number_of_units записи ждёт именно единицы, а не число
+  // порций: 200 г фарша по порции «100 g» — это 200, а не 2.
+  unitsPerServing: number;
   calories: number;
   protein: number;
   fat: number;
@@ -246,6 +250,7 @@ type RawServing = {
   serving_id: string;
   serving_description: string;
   metric_serving_amount?: string;
+  number_of_units?: string;
   calories: string;
   protein: string;
   fat: string;
@@ -269,6 +274,7 @@ export async function fsGetFood(foodId: string): Promise<{ food: FsFood; serving
       servingId: s.serving_id,
       description: s.serving_description,
       grams: s.metric_serving_amount ? Number(s.metric_serving_amount) : null,
+      unitsPerServing: Number(s.number_of_units) > 0 ? Number(s.number_of_units) : 1,
       calories: Number(s.calories),
       protein: Number(s.protein),
       fat: Number(s.fat),
@@ -312,8 +318,34 @@ export function isPermissionError(error: unknown): boolean {
 // накануне). en-CA даёт готовый Y-M-D, из которого строим UTC-полночь этого
 // дня и делим на сутки — так же, как этого требует формат FatSecret.
 export function mskDayNumber(date: Date): number {
-  const [year, month, day] = date.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' }).split('-').map(Number);
+  return dayNumberFromDate(mskDate(date));
+}
+
+// Календарная дата по Москве, YYYY-MM-DD (en-CA даёт ровно этот формат).
+export function mskDate(date: Date): string {
+  return date.toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+}
+
+// Дневниковый день: до 04:00 по Москве еда «сегодня» — это ещё вчерашний
+// день. Обед, надиктованный в 00:00, иначе уезжал на завтра, а «итоги дня»
+// в полночь показывали пустой новый день.
+export const DIARY_DAY_STARTS_AT_HOUR = 4;
+
+export function diaryDate(now: Date): string {
+  return mskDate(new Date(now.getTime() - DIARY_DAY_STARTS_AT_HOUR * 60 * 60 * 1000));
+}
+
+export function dayNumberFromDate(date: string): number {
+  const [year, month, day] = date.split('-').map(Number);
   return Date.UTC(year, month - 1, day) / 86_400_000;
+}
+
+export function dateFromDayNumber(dayNumber: number): string {
+  return new Date(dayNumber * 86_400_000).toISOString().slice(0, 10);
+}
+
+export function shiftDate(date: string, days: number): string {
+  return dateFromDayNumber(dayNumberFromDate(date) + days);
 }
 
 export type DiaryMeal = 'breakfast' | 'lunch' | 'dinner' | 'other';
@@ -361,9 +393,42 @@ export function parseFoodEntries(raw: unknown): FoodEntry[] {
   });
 }
 
-// Дневник за московский день. Доки: https://platform.fatsecret.com/docs/v1/food_entries.get
-export async function fsGetFoodEntries(date: Date): Promise<FoodEntry[]> {
-  return parseFoodEntries(await fsUserRequest({ method: 'food_entries.get', date: String(mskDayNumber(date)) }));
+// Дневник за день (YYYY-MM-DD по Москве). Доки:
+// https://platform.fatsecret.com/docs/v1/food_entries.get (v1 помечен
+// deprecated, но работает; v2 — тот же ответ через REST-путь).
+export async function fsGetFoodEntries(date: string): Promise<FoodEntry[]> {
+  return parseFoodEntries(await fsUserRequest({ method: 'food_entries.get', date: String(dayNumberFromDate(date)) }));
+}
+
+export type DayTotals = { date: string; calories: number; protein: number; fat: number; carbs: number };
+
+type RawDay = { date_int?: string; calories?: string; carbohydrate?: string; protein?: string; fat?: string };
+
+// food_entries.get_month: итоги по дням месяца; дни без записей не
+// возвращаются вовсе, один день — объектом (те же квирки XML→JSON).
+export function parseMonthTotals(raw: unknown): DayTotals[] {
+  const data = raw as { month?: { day?: RawDay | RawDay[] } | null } | null;
+  const day = data?.month?.day;
+  const list = day === undefined ? [] : Array.isArray(day) ? day : [day];
+  const num = (value: string | undefined): number => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  };
+  return list
+    .filter((d) => Number.isFinite(Number(d.date_int)))
+    .map((d) => ({
+      date: dateFromDayNumber(Number(d.date_int)),
+      calories: num(d.calories),
+      protein: num(d.protein),
+      fat: num(d.fat),
+      carbs: num(d.carbohydrate),
+    }));
+}
+
+// Итоги по дням месяца, в который попадает date (YYYY-MM-DD). Доки:
+// https://platform.fatsecret.com/docs/v1/food_entries.get_month
+export async function fsGetMonthTotals(date: string): Promise<DayTotals[]> {
+  return parseMonthTotals(await fsUserRequest({ method: 'food_entries.get_month', date: String(dayNumberFromDate(date)) }));
 }
 
 export type CreateFoodEntryInput = {

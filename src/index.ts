@@ -45,7 +45,9 @@ if (config.ROKID_MODE === 'mac') {
 startInboxServer();
 flushFoodBuffer();
 setInterval(flushFoodBuffer, FOOD_BUFFER_FLUSH_INTERVAL_MS);
-startFoodReminders((text) => bot.api.sendMessage(config.OWNER_TELEGRAM_ID, text).then(() => undefined));
+startFoodReminders((text, keyboard) =>
+  bot.api.sendMessage(config.OWNER_TELEGRAM_ID, text, { reply_markup: keyboard }).then(() => undefined),
+);
 bot.api.setMyCommands(BOT_COMMANDS).catch((e) => logError('set-my-commands', e));
 bot.start({
   onStart: () => log('rokid-ai бот запущен, жду голосовые и фото'),

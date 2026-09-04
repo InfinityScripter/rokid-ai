@@ -12,7 +12,7 @@ import {
 } from './barcode.js';
 import { caldavListEvents } from './caldav.js';
 import { config } from './config.js';
-import { fsFinishLink, fsLinked, fsStartLink, isInvalidTokenError } from './fatsecret.js';
+import { diaryDate, fsFinishLink, fsLinked, fsStartLink, isInvalidTokenError, mskDate, shiftDate } from './fatsecret.js';
 import { writeOneEvent, undoOne, type CalendarEventInput, type UndoRef } from './events.js';
 import { bufferPush, flushWithFatSecret, type BufferedEntry } from './food-buffer.js';
 import {
@@ -23,11 +23,19 @@ import {
   type FoodMatch,
   type FoodMeal,
 } from './food.js';
-import { formatEventLine, formatFoodCard, formatIntent } from './format.js';
+import { formatEventLine, formatFoodCard, formatIntent, pluralRu } from './format.js';
 import { log, logError } from './log.js';
 import { splitTranscript, summarizeMeeting, transcribeLong } from './meeting.js';
 import { PendingState } from './pending.js';
-import { foodDaySummary } from './reminders.js';
+import {
+  dayLabel,
+  dayTotalsLine,
+  foodDaySummary,
+  foodWeekSummary,
+  parseDayArg,
+  summaryKeyboard,
+  weekKeyboard,
+} from './reminders.js';
 import type { Intent } from './router.js';
 import { parseFoodPhoto, routeText } from './router.js';
 import { tmpAudioPath, transcribe } from './stt.js';
@@ -131,7 +139,29 @@ const MEAL_BUTTONS: { meal: FoodMeal; label: string }[] = [
   { meal: 'other', label: '🍎 Перекус' },
 ];
 
-function foodCardKeyboard(key: string, meal: FoodMeal): InlineKeyboard {
+// Дата на карточке: подпись только если день не календарный сегодняшний
+// (ночью после полуночи еда идёт на вчера — это видно), кнопка переключает
+// между сегодня и вчера.
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+function validDate(date: string | undefined): string | undefined {
+  return date && ISO_DATE.test(date) ? date : undefined;
+}
+
+function cardDayLabel(date: string | undefined): string | undefined {
+  const today = mskDate(new Date());
+  return date && date !== today ? dayLabel(date, today) : undefined;
+}
+
+function dateToggle(date: string | undefined): { label: string; target: string } {
+  const today = mskDate(new Date());
+  const current = date ?? today;
+  return current === today
+    ? { label: '📅 Это было вчера', target: shiftDate(today, -1) }
+    : { label: '📅 Это сегодня', target: today };
+}
+
+function foodCardKeyboard(key: string, meal: FoodMeal, date?: string): InlineKeyboard {
   const keyboard = new InlineKeyboard()
     .text('✅ Записать', `food-yes:${key}`)
     .text('✏️ Поправить', `food-edit:${key}`)
@@ -140,23 +170,27 @@ function foodCardKeyboard(key: string, meal: FoodMeal): InlineKeyboard {
   for (const button of MEAL_BUTTONS) {
     keyboard.text(button.meal === meal ? `${button.label} ✓` : button.label, `food-meal:${key}:${button.meal}`);
   }
-  return keyboard;
+  const toggle = dateToggle(date);
+  return keyboard.row().text(toggle.label, `food-date:${key}:${toggle.target}`);
 }
 
 // header — строка «🔎 Штрихкод …» над карточкой; хранится вместе с ней,
 // чтобы не пропадать при перерисовке (смена приёма пищи).
-function cardText(meal: FoodMeal, matches: FoodMatch[], header?: string): string {
-  const body = formatFoodCard(meal, matches);
+function cardText(meal: FoodMeal, matches: FoodMatch[], header?: string, date?: string): string {
+  const body = formatFoodCard(meal, matches, cardDayLabel(date));
   return header ? `${header}\n\n${body}` : body;
 }
 
-function buildFoodCard(meal: FoodMeal, matches: FoodMatch[], header?: string): IntentReply {
+// date — дневниковый день записи; по умолчанию сегодняшний с поправкой на
+// ночь (до 04:00 — ещё вчера).
+function buildFoodCard(meal: FoodMeal, matches: FoodMatch[], opts: { header?: string; date?: string } = {}): IntentReply {
   if (matches.length === 0) {
     return { text: 'Не разобрала еду — пришли фото с подписью, что это и сколько, или надиктуй.' };
   }
   const key = randomUUID();
-  state.setCard(key, { meal, matches, ...(header ? { header } : {}) });
-  return { text: cardText(meal, matches, header), keyboard: foodCardKeyboard(key, meal) };
+  const date = opts.date ?? diaryDate(new Date());
+  state.setCard(key, { meal, matches, date, ...(opts.header ? { header: opts.header } : {}) });
+  return { text: cardText(meal, matches, opts.header, date), keyboard: foodCardKeyboard(key, meal, date) };
 }
 
 // Карточки нет (старше суток, вытеснена или бот её потерял): всплывашка
@@ -185,7 +219,7 @@ async function foodFromBarcode(code: string, caption?: string): Promise<IntentRe
     outcome.kind === 'fatsecret'
       ? `🔎 Штрихкод ${code}: продукт из базы FatSecret.`
       : `🔎 Штрихкод ${code}: в FatSecret нет${why}, по этикетке (Open Food Facts) это «${outcome.product.brand ? `${outcome.product.brand} ` : ''}${outcome.product.name}» — подобрала аналог для дневника.`;
-  return buildFoodCard(mealByMoscowTime(new Date()), [outcome.match], how);
+  return buildFoodCard(mealByMoscowTime(new Date()), [outcome.match], { header: how });
 }
 
 const BARCODE_TEXT_HINT = 'Можно прислать цифры текстом: «штрихкод 4600605030288».';
@@ -242,21 +276,25 @@ export async function foodFromPhoto(imageBase64: string, caption?: string, barco
   return photoIntent(imageBase64, cleanCaption);
 }
 
-// Итоги дня по дневнику FatSecret — кнопка, /summary и голосом.
-async function daySummaryReply(): Promise<IntentReply> {
+// Итоги дня по дневнику FatSecret — кнопка, /summary и голосом; под ними
+// кнопки соседних дней и недели.
+async function daySummaryReply(date?: string): Promise<IntentReply> {
   if (!fsLinked()) return { text: 'Сначала привяжи аккаунт: /fatsecret_link' };
-  return { text: await foodDaySummary(new Date(), 'manual') };
+  const today = diaryDate(new Date());
+  const day = date ?? today;
+  return { text: await foodDaySummary(day, 'manual'), keyboard: summaryKeyboard(day, today) };
 }
 
 async function showFoodCard(
   meal: FoodMeal,
   items: { name: string; amount: string; query: string }[],
+  date?: string,
 ): Promise<IntentReply> {
   if (!fsLinked()) {
     return { text: 'Сначала привяжи аккаунт: /fatsecret_link' };
   }
   const matches = await matchFoodItems(items);
-  return buildFoodCard(meal, matches);
+  return buildFoodCard(meal, matches, { date });
 }
 
 // Ожидающая правка перехватывает сообщение до роутера: пересобираем карточку
@@ -271,7 +309,7 @@ async function maybeApplyFoodEdit(text: string): Promise<IntentReply | null> {
     return { text: '❌ Ок, убрала всё — карточку закрыла.' };
   }
   const matches = await matchFoodItems(items);
-  return buildFoodCard(edit.meal, matches);
+  return buildFoodCard(edit.meal, matches, { date: edit.date });
 }
 
 export async function applyIntent(intent: Intent): Promise<IntentReply> {
@@ -282,10 +320,10 @@ export async function applyIntent(intent: Intent): Promise<IntentReply> {
     return cancelLast();
   }
   if (intent.intent === 'food_log') {
-    return showFoodCard(intent.meal, intent.items);
+    return showFoodCard(intent.meal, intent.items, validDate(intent.date));
   }
   if (intent.intent === 'food_summary') {
-    return daySummaryReply();
+    return daySummaryReply(validDate(intent.date));
   }
   if (intent.intent !== 'calendar_event' || intent.uncertain.length > 0) {
     return { text: formatIntent(intent) };
@@ -376,16 +414,20 @@ bot.callbackQuery(/^food-yes:(.+)$/, async (ctx) => {
   state.deleteCard(ctx.match[1]);
   await ctx.answerCallbackQuery({ text: 'Записываю…' });
 
+  // Имя записи — слова владельца («говяжий фарш»), а не английское имя из
+  // базы: так итоги дня и приложение читаются по-русски. Полдень по Москве —
+  // чтобы день записи не сдвинулся ни в какой таймзоне.
+  const day = pending.date ?? diaryDate(new Date());
   const entries: BufferedEntry[] = [];
   for (const m of pending.matches) {
     if (!m.food || !m.servingId) continue;
     entries.push({
       foodId: m.food.foodId,
-      name: m.food.foodName,
+      name: m.name,
       servingId: m.servingId,
-      units: m.units,
+      units: m.numberOfUnits,
       meal: pending.meal,
-      date: new Date().toISOString(),
+      date: `${day}T12:00:00+03:00`,
     });
   }
   if (entries.length === 0) {
@@ -404,7 +446,12 @@ bot.callbackQuery(/^food-yes:(.+)$/, async (ctx) => {
         `${sentPart}📤 ещё ${result.left} жду одобрения Premier Free, отправлю сама, как только FatSecret откроет запись.\npowered by fatsecret`,
       );
     } else {
-      await ctx.reply(`✅ Записала в FatSecret (${result.sent} позиций) — смотри в приложении.\npowered by fatsecret`);
+      const totals = await dayTotalsLine(day);
+      await ctx.reply(
+        [`✅ Записала в FatSecret ${pluralRu(result.sent, ['позицию', 'позиции', 'позиций'])}.`, totals, 'powered by fatsecret']
+          .filter(Boolean)
+          .join('\n'),
+      );
     }
   } catch (error) {
     logError('food-yes', error);
@@ -431,12 +478,54 @@ bot.callbackQuery(/^food-meal:([^:]+):(breakfast|lunch|dinner|other)$/, async (c
   if (edit?.key === key) state.setEdit({ ...edit, meal });
   await ctx.answerCallbackQuery({ text: 'Приём пищи изменила' });
   try {
-    await ctx.editMessageText(cardText(meal, pending.matches, pending.header), {
-      reply_markup: foodCardKeyboard(key, meal),
+    await ctx.editMessageText(cardText(meal, pending.matches, pending.header, pending.date), {
+      reply_markup: foodCardKeyboard(key, meal, pending.date),
     });
   } catch (error) {
     // Повторное нажатие той же кнопки: Telegram отвергает правку без изменений.
     logError('food-meal', error);
+  }
+});
+
+bot.callbackQuery(/^food-date:([^:]+):(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
+  const key = ctx.match[1];
+  const date = ctx.match[2];
+  const pending = state.getCard(key);
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: 'Эта карточка устарела' });
+    return;
+  }
+  state.setCard(key, { ...pending, date });
+  const edit = state.edit;
+  if (edit?.key === key) state.setEdit({ ...edit, date });
+  await ctx.answerCallbackQuery({ text: `Запишу на ${dayLabel(date, mskDate(new Date()))}` });
+  try {
+    await ctx.editMessageText(cardText(pending.meal, pending.matches, pending.header, date), {
+      reply_markup: foodCardKeyboard(key, pending.meal, date),
+    });
+  } catch (error) {
+    logError('food-date', error);
+  }
+});
+
+bot.callbackQuery(/^summary:(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
+  const date = ctx.match[1];
+  await ctx.answerCallbackQuery({ text: `Смотрю ${dayLabel(date, diaryDate(new Date()))}…` });
+  try {
+    await ctx.editMessageText(await foodDaySummary(date, 'manual'), {
+      reply_markup: summaryKeyboard(date, diaryDate(new Date())),
+    });
+  } catch (error) {
+    logError('summary-day', error);
+  }
+});
+
+bot.callbackQuery('summary-week', async (ctx) => {
+  await ctx.answerCallbackQuery({ text: 'Считаю неделю…' });
+  try {
+    await ctx.editMessageText(await foodWeekSummary(), { reply_markup: weekKeyboard(diaryDate(new Date())) });
+  } catch (error) {
+    logError('summary-week', error);
   }
 });
 
@@ -446,7 +535,7 @@ bot.callbackQuery(/^food-edit:(.+)$/, async (ctx) => {
     await staleCard(ctx);
     return;
   }
-  state.setEdit({ key: ctx.match[1], meal: pending.meal, matches: pending.matches });
+  state.setEdit({ key: ctx.match[1], meal: pending.meal, matches: pending.matches, date: pending.date });
   await ctx.answerCallbackQuery({ text: 'Жду поправку' });
   await ctx.reply('✏️ Пришли поправку текстом или голосом: «борщ 400 грамм, тосты убери».');
 });
@@ -467,8 +556,9 @@ bot.command('start', async (ctx) => {
       '📷 Фото еды → определю блюда и порции; штрихкод на упаковке — найду продукт по нему\n' +
       '🔎 Кнопка «Штрихкод» (или /barcode) → следующее фото только по штрихкоду\n' +
       '✍️ Текст → то же, что и голосовое\n' +
-      '📊 Кнопка «Итоги дня» (или /summary) → что записано в FatSecret за сегодня; ' +
-      'сама напомню в 14:30 и 21:30 по Москве',
+      '📊 Кнопка «Итоги дня» (или /summary, /summary вчера) → что записано в FatSecret; ' +
+      'сама напомню в 14:30 и 21:30 по Москве\n' +
+      '🌙 До 04:00 еда пишется на вчерашний день; «вчера на ужин …» — тоже понимаю',
     { reply_markup: MAIN_KEYBOARD },
   );
 });
@@ -495,8 +585,16 @@ bot.command(['barcode', 'barkode', 'shtrihkod'], async (ctx) => {
 });
 
 bot.command(['summary', 'itogi', 'today'], async (ctx) => {
-  const reply = await daySummaryReply();
-  await ctx.reply(reply.text, { reply_markup: MAIN_KEYBOARD });
+  const arg = String(ctx.match ?? '').trim();
+  const date = parseDayArg(arg, diaryDate(new Date()));
+  if (!date) {
+    await ctx.reply('Не поняла день. Можно так: /summary вчера, /summary 3 сентября, /summary 2026-09-03.', {
+      reply_markup: MAIN_KEYBOARD,
+    });
+    return;
+  }
+  const reply = await daySummaryReply(date);
+  await ctx.reply(reply.text, { reply_markup: reply.keyboard ?? MAIN_KEYBOARD });
 });
 
 bot.command('fatsecret_link', async (ctx) => {
@@ -624,7 +722,7 @@ bot.on('message:photo', async (ctx) => {
 // незнакомую команду — чтобы опечатка вроде /barkode не уезжала в роутер.
 export const BOT_COMMANDS = [
   { command: 'barcode', description: 'Следующее фото — только по штрихкоду (или /barcode <цифры>)' },
-  { command: 'summary', description: 'Итоги дня по еде из FatSecret (ккал, БЖУ, чего не хватает)' },
+  { command: 'summary', description: 'Итоги дня по еде: ккал, БЖУ, чего не хватает (/summary вчера, 3 сентября)' },
   { command: 'fatsecret_link', description: 'Привязать аккаунт FatSecret' },
   { command: 'start', description: 'Что умеет бот' },
 ];
@@ -644,7 +742,7 @@ bot.on('message:text', async (ctx) => {
   }
   if (text === BUTTON_SUMMARY) {
     const reply = await daySummaryReply();
-    await ctx.reply(reply.text, { reply_markup: MAIN_KEYBOARD });
+    await ctx.reply(reply.text, { reply_markup: reply.keyboard ?? MAIN_KEYBOARD });
     return;
   }
   if (text.startsWith('/')) {

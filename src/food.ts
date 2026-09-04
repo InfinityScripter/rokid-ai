@@ -46,6 +46,9 @@ export type FoodMatch = {
   food: { foodId: string; foodName: string } | null;
   servingId: string | null;
   units: number;
+  // units — сколько порций съедено (для карточки), numberOfUnits — то же в
+  // единицах порции FatSecret (units × unitsPerServing): в дневник идёт оно.
+  numberOfUnits: number;
   grams: number | null;
   calories: number | null;
   note: string | null;
@@ -130,6 +133,7 @@ function notFound(item: FoodItem, note: string): FoodMatch {
     food: null,
     servingId: null,
     units: 0,
+    numberOfUnits: 0,
     grams: null,
     calories: null,
     note,
@@ -158,7 +162,7 @@ function pickValidPair(
 // содержательная проверка диапазона, иначе «2 тарелки борща» на 9000 units
 // разнесёт калории. При провале — консервативный дефолт, не отказ.
 function sanitizeUnits(units: number): number {
-  return Number.isFinite(units) && units > 0 && units <= 50 ? units : 1;
+  return Number.isFinite(units) && units > 0 && units <= 1000 ? units : 1;
 }
 
 function sanitizeGrams(grams: number | null): number | null {
@@ -294,6 +298,7 @@ async function matchAmongCandidates(
     food: { foodId: food.foodId, foodName: food.name },
     servingId: serving.servingId,
     units,
+    numberOfUnits: units * serving.unitsPerServing,
     grams,
     calories: serving.calories * units,
     note: null,

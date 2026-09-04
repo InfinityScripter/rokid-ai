@@ -13,8 +13,19 @@ import './test-env.js';
 process.env.SQLITE_PATH = path.join(mkdtempSync(path.join(os.tmpdir(), 'rokid-ai-fatsecret-test-')), 'test.sqlite');
 
 const { config } = await import('./config.js');
-const { fsFindFoodIdForBarcode, fsFinishLink, fsLinked, fsStartLink, fsUserRequest, isPermissionError, mskDayNumber, oauth1BaseString } =
-  await import('./fatsecret.js');
+const {
+  diaryDate,
+  fsFindFoodIdForBarcode,
+  fsFinishLink,
+  fsGetFood,
+  fsLinked,
+  fsStartLink,
+  fsUserRequest,
+  isPermissionError,
+  mskDayNumber,
+  oauth1BaseString,
+  shiftDate,
+} = await import('./fatsecret.js');
 
 test('oauth1BaseString: сортировка, RFC3986-кодирование, кириллица', () => {
   const base = oauth1BaseString('POST', 'https://platform.fatsecret.com/rest/server.api', {
@@ -129,4 +140,48 @@ test('isPermissionError: код 14 / Missing scope / premier — да, «не н
   assert.equal(isPermissionError(new Error('FatSecret x: 2 This feature requires a premier subscription')), true);
   assert.equal(isPermissionError(new Error('FatSecret x: HTTP 503')), false);
   assert.equal(isPermissionError(new Error('fetch failed')), false);
+});
+
+test('diaryDate: до 04:00 МСК — ещё вчера, с 04:00 — сегодня; shiftDate через границу месяца', () => {
+  // 00:30 МСК 5 сентября = 21:30 UTC 4 сентября → дневниковый день 4 сентября.
+  assert.equal(diaryDate(new Date('2026-09-04T21:30:00.000Z')), '2026-09-04');
+  // 03:59 МСК — всё ещё 4-е, 04:00 — уже 5-е.
+  assert.equal(diaryDate(new Date('2026-09-05T00:59:00.000Z')), '2026-09-04');
+  assert.equal(diaryDate(new Date('2026-09-05T01:00:00.000Z')), '2026-09-05');
+  assert.equal(shiftDate('2026-09-01', -1), '2026-08-31');
+  assert.equal(shiftDate('2026-12-31', 1), '2027-01-01');
+});
+
+test('fsGetFood: unitsPerServing из number_of_units порции («100 g» → 100), без поля → 1', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    if (url.toString() === 'https://oauth.fatsecret.com/connect/token') {
+      return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(
+      JSON.stringify({
+        food: {
+          food_id: '1',
+          food_name: 'Ground Beef',
+          servings: {
+            serving: [
+              { serving_id: 'g', serving_description: '100 g', metric_serving_amount: '100.000', number_of_units: '100.000', calories: '276', protein: '26', fat: '18', carbohydrate: '0' },
+              { serving_id: 'c', serving_description: '1 cup', calories: '400', protein: '30', fat: '20', carbohydrate: '0' },
+            ],
+          },
+        },
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  }) as typeof fetch;
+
+  const { servings } = await fsGetFood('1');
+  assert.equal(servings[0].unitsPerServing, 100);
+  assert.equal(servings[0].grams, 100);
+  assert.equal(servings[1].unitsPerServing, 1);
 });

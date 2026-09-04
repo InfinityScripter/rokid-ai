@@ -29,7 +29,19 @@ function labelLine(m: FoodMatch): string {
   return ` (по этикетке ~${Math.round((m.labelKcalPer100g * m.grams) / 100)} ккал)`;
 }
 
-export function formatFoodCard(meal: FoodMeal, matches: FoodMatch[]): string {
+// «1 позицию», «4 позиции», «5 позиций».
+export function pluralRu(n: number, forms: [string, string, string]): string {
+  const abs = Math.abs(n) % 100;
+  const last = abs % 10;
+  if (abs > 10 && abs < 20) return `${n} ${forms[2]}`;
+  if (last === 1) return `${n} ${forms[0]}`;
+  if (last >= 2 && last <= 4) return `${n} ${forms[1]}`;
+  return `${n} ${forms[2]}`;
+}
+
+// dayLabel — «вчера, 4 сентября», когда еда пишется не на календарный
+// сегодняшний день; за сегодня подпись не нужна.
+export function formatFoodCard(meal: FoodMeal, matches: FoodMatch[], dayLabel?: string): string {
   const meals = { breakfast: 'завтрак', lunch: 'обед', dinner: 'ужин', other: 'перекус' };
   const lines = matches.map((m) =>
     m.food
@@ -37,7 +49,8 @@ export function formatFoodCard(meal: FoodMeal, matches: FoodMatch[]): string {
       : `• ${m.name} (${m.amount}) — ${m.note}`,
   );
   const total = matches.reduce((sum, m) => sum + (m.calories ?? 0), 0);
-  return [`🍽 ${meals[meal]}:`, ...lines, `Итого: ${Math.round(total)} ккал`, 'powered by fatsecret'].join('\n');
+  const title = dayLabel ? `🍽 ${meals[meal]}, ${dayLabel}:` : `🍽 ${meals[meal]}:`;
+  return [title, ...lines, `Итого: ${Math.round(total)} ккал`, 'powered by fatsecret'].join('\n');
 }
 
 function skippedLine(skipped: string[]): string[] {

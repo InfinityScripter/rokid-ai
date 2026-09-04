@@ -13,6 +13,7 @@ const match = (name: string): FoodMatch => ({
   food: { foodId: '1', foodName: name },
   servingId: 's1',
   units: 1,
+  numberOfUnits: 100,
   grams: null,
   calories: 100,
   note: null,

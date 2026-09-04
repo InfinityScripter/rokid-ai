@@ -10,10 +10,12 @@ import { matchFoodItems } from './food.js';
 
 const food = (foodId: string, name: string): FsFood => ({ foodId, name, brand: null, description: '' });
 
+// Порция «100 g»: unitsPerServing 100 — в дневник уходят граммы, не порции.
 const serving = (servingId: string, calories: number): FsServing => ({
   servingId,
-  description: '1 serving',
+  description: '100 g',
   grams: 100,
+  unitsPerServing: 100,
   calories,
   protein: 1,
   fat: 1,
@@ -38,6 +40,8 @@ test('калории = calories сервинга × units', async () => {
   assert.equal(result.food?.foodId, '111');
   assert.equal(result.servingId, 's1');
   assert.equal(result.units, 2);
+  // 2 порции по 100 г → в FatSecret number_of_units = 200 (единицы порции).
+  assert.equal(result.numberOfUnits, 200);
   assert.equal(result.calories, 240);
   assert.equal(result.note, null);
 });
@@ -92,7 +96,7 @@ test('все кандидаты без сервингов → note «не наш
   assert.equal(called, false);
 });
 
-test('units вне диапазона (0, отрицательные, >50) → откат на 1', async () => {
+test('units вне диапазона (0, отрицательные, >1000) → откат на 1', async () => {
   const [result] = await matchFoodItems([{ name: 'рис', amount: 'много', query: 'rice' }], {
     searchFoods: async () => [food('c1', 'Rice')],
     getServings: async () => [serving('sc1', 50)],

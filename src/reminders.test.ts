@@ -3,8 +3,8 @@ import { test } from 'node:test';
 
 import './test-env.js';
 
-import { parseFoodEntries, type FoodEntry } from './fatsecret.js';
-import { dueReminder, formatDaySummary } from './reminders.js';
+import { parseFoodEntries, parseMonthTotals, type FoodEntry } from './fatsecret.js';
+import { dayLabel, dueReminder, formatDaySummary, formatWeekSummary, parseDayArg } from './reminders.js';
 
 const entry = (name: string, meal: FoodEntry['meal'], calories: number, macros: [number, number, number] = [0, 0, 0]): FoodEntry => ({
   name,
@@ -59,36 +59,91 @@ test('parseFoodEntries: массив, одиночный объект, пуст�
   assert.deepEqual(parseFoodEntries(null), []);
 });
 
-test('formatDaySummary: итого с БЖУ, приёмы пищи по порядку, чего не хватает, буфер', () => {
+test('parseMonthTotals: дни по date_int → YYYY-MM-DD, один день объектом, пустой месяц', () => {
+  const days = parseMonthTotals({
+    month: {
+      from_date_int: '20699',
+      to_date_int: '20728',
+      day: [
+        { date_int: String(DAY), calories: '1450', carbohydrate: '160', protein: '78', fat: '52' },
+        { date_int: String(DAY + 1), calories: '662', carbohydrate: '42', protein: '35', fat: '39' },
+      ],
+    },
+  });
+  assert.deepEqual(days[0], { date: '2026-09-03', calories: 1450, protein: 78, fat: 52, carbs: 160 });
+  assert.equal(days[1].date, '2026-09-04');
+  assert.equal(parseMonthTotals({ month: { day: { date_int: String(DAY), calories: '1' } } }).length, 1);
+  assert.deepEqual(parseMonthTotals({ month: null }), []);
+  assert.deepEqual(parseMonthTotals({}), []);
+});
+
+test('dayLabel и parseDayArg: сегодня/вчера/позавчера, «3 сентября», «3 сен», ISO, будущее → прошлый год', () => {
+  assert.equal(dayLabel('2026-09-05', '2026-09-05'), 'сегодня, 5 сентября');
+  assert.equal(dayLabel('2026-09-04', '2026-09-05'), 'вчера, 4 сентября');
+  assert.equal(dayLabel('2026-09-03', '2026-09-05'), 'позавчера, 3 сентября');
+  assert.equal(dayLabel('2026-08-30', '2026-09-05'), '30 августа');
+
+  assert.equal(parseDayArg('', '2026-09-05'), '2026-09-05');
+  assert.equal(parseDayArg('вчера', '2026-09-05'), '2026-09-04');
+  assert.equal(parseDayArg('Позавчера', '2026-09-05'), '2026-09-03');
+  assert.equal(parseDayArg('3 сентября', '2026-09-05'), '2026-09-03');
+  assert.equal(parseDayArg('3 сен', '2026-09-05'), '2026-09-03');
+  assert.equal(parseDayArg('2026-08-30', '2026-09-05'), '2026-08-30');
+  assert.equal(parseDayArg('30 декабря', '2026-09-05'), '2025-12-30');
+  assert.equal(parseDayArg('когда-то', '2026-09-05'), null);
+});
+
+test('formatDaySummary: итого с БЖУ, приёмы по порядку с ккал по позициям, чего не хватает, буфер', () => {
   const text = formatDaySummary(
     [
-      entry('Творожное зерно', 'dinner', 278.4, [40.2, 13.1, 9.9]),
-      entry('Овсянка', 'breakfast', 150, [5, 3, 27]),
-      entry('Банан', 'other', 89, [1, 0, 23]),
+      entry('чизкейк', 'dinner', 278.4, [40.2, 13.1, 9.9]),
+      entry('овсянка', 'breakfast', 150, [5, 3, 27]),
+      entry('банан', 'other', 89, [1, 0, 23]),
     ],
-    { kind: 'evening', buffered: 2, now: new Date('2026-09-03T18:30:00Z') },
+    { kind: 'evening', buffered: 2, date: '2026-09-03', today: '2026-09-03' },
   );
   const lines = text.split('\n');
-  assert.equal(lines[0], '🌙 Итоги дня, 3 сентября:');
+  assert.equal(lines[0], '🌙 Итоги дня, сегодня, 3 сентября:');
   assert.equal(lines[1], 'Итого: 517 ккал · Б 46 г · Ж 16 г · У 60 г');
-  assert.equal(lines[2], '🍳 Завтрак — 150 ккал: Овсянка');
-  assert.equal(lines[3], '🌙 Ужин — 278 ккал: Творожное зерно');
-  assert.equal(lines[4], '🍎 Перекус — 89 ккал: Банан');
+  assert.equal(lines[2], '🍳 Завтрак — 150 ккал: овсянка 150');
+  assert.equal(lines[3], '🌙 Ужин — 278 ккал: чизкейк 278');
+  assert.equal(lines[4], '🍎 Перекус — 89 ккал: банан 89');
   assert.match(lines[5], /^📤 Ещё 2 поз\. в буфере/);
   assert.equal(lines[7], 'Не вижу: обед. Записать? Надиктуй, напиши или пришли фото.');
 });
 
-test('formatDaySummary: пустой дневник и все приёмы на месте', () => {
-  const empty = formatDaySummary([], { kind: 'midday', buffered: 0, now: new Date('2026-09-03T11:30:00Z') });
-  assert.match(empty, /^☀️ Еда за 3 сентября, пока что:\nВ дневнике FatSecret пусто\./);
+test('formatDaySummary: пустой дневник, все приёмы на месте, прошлый день без призыва записать', () => {
+  const empty = formatDaySummary([], { kind: 'midday', buffered: 0, date: '2026-09-03', today: '2026-09-03' });
+  assert.match(empty, /^☀️ Еда за сегодня, 3 сентября, пока что:\nВ дневнике FatSecret пусто\./);
   assert.match(empty, /забыл записать/);
   assert.doesNotMatch(empty, /буфере/);
 
   const full = formatDaySummary(
     [entry('а', 'breakfast', 1), entry('б', 'lunch', 1), entry('в', 'dinner', 1)],
-    { kind: 'manual', buffered: 0, now: new Date('2026-09-03T11:30:00Z') },
+    { kind: 'manual', buffered: 0, date: '2026-09-03', today: '2026-09-03' },
   );
-  assert.match(full, /^📊 Итоги дня, 3 сентября:/);
+  assert.match(full, /^📊 Итоги дня, сегодня, 3 сентября:/);
   assert.match(full, /Ничего не забыл записать\?/);
-  assert.doesNotMatch(full, /Не вижу/);
+
+  const yesterday = formatDaySummary([entry('а', 'breakfast', 1)], { kind: 'manual', buffered: 3, date: '2026-09-02', today: '2026-09-03' });
+  assert.match(yesterday, /^📊 Итоги дня, вчера, 2 сентября:/);
+  assert.match(yesterday, /Не записано: обед, ужин\. Если ел — скажи «вчера на обед …», добавлю\./);
+  assert.doesNotMatch(yesterday, /буфере/);
+});
+
+test('formatWeekSummary: 7 дней подряд, пустые как «пусто», среднее по заполненным', () => {
+  const text = formatWeekSummary(
+    [
+      { date: '2026-09-03', calories: 1450, protein: 78, fat: 52, carbs: 160 },
+      { date: '2026-08-30', calories: 2000, protein: 100, fat: 60, carbs: 200 },
+    ],
+    '2026-09-04',
+  );
+  const lines = text.split('\n');
+  assert.equal(lines[0], '📈 Последние 7 дней:');
+  assert.equal(lines[1], 'сб 29 авг — пусто');
+  assert.equal(lines[2], 'вс 30 авг — 2000 ккал · Б 100 г · Ж 60 г · У 200 г');
+  assert.equal(lines[6], 'чт 3 сен — 1450 ккал · Б 78 г · Ж 52 г · У 160 г');
+  assert.equal(lines[7], 'пт 4 сен — пусто');
+  assert.equal(lines[9], 'Среднее за 2 дн. с записями: 1725 ккал · Б 89 г · Ж 56 г · У 180 г');
 });
