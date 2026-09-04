@@ -61,6 +61,12 @@ export function bufferPush(entries: BufferedEntry[]): Promise<void> {
   });
 }
 
+// Сколько позиций ещё ждут отправки — для итогов дня (они в дневнике не
+// видны, но владелец их уже «записал»).
+export function bufferSize(): Promise<number> {
+  return enqueue(() => load().entries.length);
+}
+
 // Шлёт буфер по порядку через send; при первой же ошибке останавливается и
 // оставляет непровереннную запись и всё, что за ней, в файле — это и есть
 // признак «Premier ещё не одобрен» (или другая ошибка FatSecret), на который

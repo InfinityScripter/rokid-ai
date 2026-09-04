@@ -42,7 +42,10 @@ export const intentSchema = z.discriminatedUnion('intent', [
     topic: z.string(),
   }),
   z.object({
-    intent: z.literal('note'),
+    intent: z.literal('food_summary'),
+  }),
+  z.object({
+    intent: z.literal('other'),
     text: z.string(),
     skipped: z.array(z.string()).default([]),
   }),
@@ -69,7 +72,7 @@ const routerTool: OpenAI.Chat.Completions.ChatCompletionTool = {
       properties: {
         intent: {
           type: 'string',
-          enum: ['calendar_event', 'food_log', 'meeting_audio', 'note', 'cancel_last', 'agenda'],
+          enum: ['calendar_event', 'food_log', 'meeting_audio', 'food_summary', 'other', 'cancel_last', 'agenda'],
         },
         from: { type: 'string', description: 'ISO 8601 с таймзоной — начало периода для agenda' },
         to: { type: 'string', description: 'ISO 8601 с таймзоной — конец периода для agenda' },
@@ -162,7 +165,7 @@ export async function routeText(text: string, now: Date): Promise<Intent> {
         'Повторяющиеся события («каждый вторник») НЕ поддерживаются: в events не включай, ' +
         'добавь в skipped с пометкой «серии не умею — создай руками»; разовые события из той же фразы обработай. ' +
         'Если в заметке несколько разных тем (встреча И еда) — обработай главную ' +
-        '(календарь приоритетнее еды, еда приоритетнее заметки), остальные перечисли в skipped ' +
+        '(календарь приоритетнее еды, еда приоритетнее прочего), остальные перечисли в skipped ' +
         'с просьбой прислать отдельным сообщением. ' +
         'Вопрос о планах — «что у меня сегодня», «какие встречи завтра», «что на этой неделе», ' +
         'what is on my calendar today → agenda: посчитай период from/to в ISO от текущего момента ' +
@@ -173,7 +176,9 @@ export async function routeText(text: string, now: Date): Promise<Intent> {
         'Еда («съел», «на обед было») → food_log. Для каждого продукта заполни query — короткое английское ' +
         'название для поиска в американской базе продуктов («борщ» → "borscht", «два тоста с сыром» → ' +
         '"toast with cheese"). Просьба сделать саммари разговора → meeting_audio. ' +
-        'Всё прочее → note с исходным текстом.',
+        'Вопрос про съеденное за сегодня — «сколько я сегодня съел», «что я ел», «сколько калорий набрал», ' +
+        '«итоги дня по еде» → food_summary. ' +
+        'Всё прочее (мысли, заметки, просьбы не по теме) → other с исходным текстом.',
     },
   ]);
 }

@@ -26,8 +26,8 @@ import {
 import { formatEventLine, formatFoodCard, formatIntent } from './format.js';
 import { log, logError } from './log.js';
 import { splitTranscript, summarizeMeeting, transcribeLong } from './meeting.js';
-import { addNote, listNotes } from './notes.js';
 import { PendingState } from './pending.js';
+import { foodDaySummary } from './reminders.js';
 import type { Intent } from './router.js';
 import { parseFoodPhoto, routeText } from './router.js';
 import { tmpAudioPath, transcribe } from './stt.js';
@@ -36,7 +36,7 @@ const MEETING_AUDIO_THRESHOLD_SECONDS = 180;
 
 // Кнопки календаря живут в памяти: после перезапуска бота отвечают
 // «устарело», это осознанный компромисс. Карточки еды, ожидающая правка
-// («✏️ Поправить»: следующее сообщение — правка, а не заметка) и режим
+// («✏️ Поправить»: следующее сообщение — правка, а не новая фраза) и режим
 // «штрихкод» — на диске (pending.ts): деплой перезапускает бота на каждый
 // мерж, и «✅ Записать» на карточке минутной давности не должно молча умирать.
 const undoable = new Map<string, UndoRef[]>();
@@ -49,8 +49,8 @@ let lastUndoKey: string | null = null;
 // команды. Тексты кнопок перехватываются до роутера (см. message:text).
 const BUTTON_BARCODE = '🔎 Штрихкод';
 const BUTTON_PHOTO = '📷 Фото еды';
-const BUTTON_NOTES = '📝 Заметки';
-const MAIN_KEYBOARD = new Keyboard().text(BUTTON_BARCODE).text(BUTTON_PHOTO).row().text(BUTTON_NOTES).resized().persistent();
+const BUTTON_SUMMARY = '📊 Итоги дня';
+const MAIN_KEYBOARD = new Keyboard().text(BUTTON_BARCODE).text(BUTTON_PHOTO).row().text(BUTTON_SUMMARY).resized().persistent();
 
 function armBarcodeMode(): string {
   state.setBarcodeArmed(true);
@@ -60,23 +60,6 @@ function armBarcodeMode(): string {
   );
 }
 
-function notesReply(): string {
-  const notes = listNotes(10);
-  if (notes.length === 0) {
-    return 'Заметок пока нет — пришли текст или голосовое, всё, что не встреча и не еда, запишу сюда.';
-  }
-  const lines = notes.map((note) => {
-    const when = new Date(note.at).toLocaleString('ru-RU', {
-      timeZone: 'Europe/Moscow',
-      day: 'numeric',
-      month: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-    return `• ${when} — ${note.text}`;
-  });
-  return `📝 Последние заметки:\n${lines.join('\n')}`;
-}
 
 export type IntentReply = { text: string; keyboard?: InlineKeyboard };
 
@@ -259,6 +242,12 @@ export async function foodFromPhoto(imageBase64: string, caption?: string, barco
   return photoIntent(imageBase64, cleanCaption);
 }
 
+// Итоги дня по дневнику FatSecret — кнопка, /summary и голосом.
+async function daySummaryReply(): Promise<IntentReply> {
+  if (!fsLinked()) return { text: 'Сначала привяжи аккаунт: /fatsecret_link' };
+  return { text: await foodDaySummary(new Date(), 'manual') };
+}
+
 async function showFoodCard(
   meal: FoodMeal,
   items: { name: string; amount: string; query: string }[],
@@ -295,9 +284,8 @@ export async function applyIntent(intent: Intent): Promise<IntentReply> {
   if (intent.intent === 'food_log') {
     return showFoodCard(intent.meal, intent.items);
   }
-  if (intent.intent === 'note') {
-    addNote(intent.text);
-    return { text: formatIntent(intent) };
+  if (intent.intent === 'food_summary') {
+    return daySummaryReply();
   }
   if (intent.intent !== 'calendar_event' || intent.uncertain.length > 0) {
     return { text: formatIntent(intent) };
@@ -475,10 +463,12 @@ async function downloadTelegramFile(fileId: string): Promise<{ buffer: Buffer; r
 bot.command('start', async (ctx) => {
   await ctx.reply(
     'Привет! Я — инбокс очков Rokid.\n' +
-      '🎤 Голосовое → разберу встречу, еду или заметку\n' +
+      '🎤 Голосовое → разберу встречу или еду; «сколько я сегодня съел» → итоги дня\n' +
       '📷 Фото еды → определю блюда и порции; штрихкод на упаковке — найду продукт по нему\n' +
       '🔎 Кнопка «Штрихкод» (или /barcode) → следующее фото только по штрихкоду\n' +
-      '✍️ Текст → то же, что и голосовое',
+      '✍️ Текст → то же, что и голосовое\n' +
+      '📊 Кнопка «Итоги дня» (или /summary) → что записано в FatSecret за сегодня; ' +
+      'сама напомню в 14:30 и 21:30 по Москве',
     { reply_markup: MAIN_KEYBOARD },
   );
 });
@@ -504,8 +494,9 @@ bot.command(['barcode', 'barkode', 'shtrihkod'], async (ctx) => {
   await ctx.reply(armBarcodeMode(), { reply_markup: MAIN_KEYBOARD });
 });
 
-bot.command('notes', async (ctx) => {
-  await ctx.reply(notesReply(), { reply_markup: MAIN_KEYBOARD });
+bot.command(['summary', 'itogi', 'today'], async (ctx) => {
+  const reply = await daySummaryReply();
+  await ctx.reply(reply.text, { reply_markup: MAIN_KEYBOARD });
 });
 
 bot.command('fatsecret_link', async (ctx) => {
@@ -630,10 +621,10 @@ bot.on('message:photo', async (ctx) => {
 });
 
 // Список для меню команд Telegram (автодополнение по «/») и для ответа на
-// незнакомую команду — чтобы опечатка вроде /barkode не уезжала в заметки.
+// незнакомую команду — чтобы опечатка вроде /barkode не уезжала в роутер.
 export const BOT_COMMANDS = [
   { command: 'barcode', description: 'Следующее фото — только по штрихкоду (или /barcode <цифры>)' },
-  { command: 'notes', description: 'Последние заметки' },
+  { command: 'summary', description: 'Итоги дня по еде из FatSecret (ккал, БЖУ, чего не хватает)' },
   { command: 'fatsecret_link', description: 'Привязать аккаунт FatSecret' },
   { command: 'start', description: 'Что умеет бот' },
 ];
@@ -651,8 +642,9 @@ bot.on('message:text', async (ctx) => {
     });
     return;
   }
-  if (text === BUTTON_NOTES) {
-    await ctx.reply(notesReply(), { reply_markup: MAIN_KEYBOARD });
+  if (text === BUTTON_SUMMARY) {
+    const reply = await daySummaryReply();
+    await ctx.reply(reply.text, { reply_markup: MAIN_KEYBOARD });
     return;
   }
   if (text.startsWith('/')) {
