@@ -316,6 +316,56 @@ export function mskDayNumber(date: Date): number {
   return Date.UTC(year, month - 1, day) / 86_400_000;
 }
 
+export type DiaryMeal = 'breakfast' | 'lunch' | 'dinner' | 'other';
+export type FoodEntry = {
+  name: string;
+  meal: DiaryMeal;
+  units: number;
+  calories: number;
+  protein: number;
+  fat: number;
+  carbs: number;
+};
+
+type RawFoodEntry = {
+  food_entry_name?: string;
+  meal?: string;
+  number_of_units?: string;
+  calories?: string;
+  protein?: string;
+  fat?: string;
+  carbohydrate?: string;
+};
+
+// Ответ food_entries.get: числа строками, один элемент — объектом, а не
+// массивом из одного, пустой день — food_entries: null (XML→JSON у FatSecret).
+export function parseFoodEntries(raw: unknown): FoodEntry[] {
+  const data = raw as { food_entries?: { food_entry?: RawFoodEntry | RawFoodEntry[] } | null } | null;
+  const entry = data?.food_entries?.food_entry;
+  const list = entry === undefined ? [] : Array.isArray(entry) ? entry : [entry];
+  const num = (value: string | undefined): number => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  };
+  return list.map((e) => {
+    const meal = (e.meal ?? '').toLowerCase();
+    return {
+      name: e.food_entry_name ?? '',
+      meal: meal === 'breakfast' || meal === 'lunch' || meal === 'dinner' ? meal : 'other',
+      units: num(e.number_of_units),
+      calories: num(e.calories),
+      protein: num(e.protein),
+      fat: num(e.fat),
+      carbs: num(e.carbohydrate),
+    };
+  });
+}
+
+// Дневник за московский день. Доки: https://platform.fatsecret.com/docs/v1/food_entries.get
+export async function fsGetFoodEntries(date: Date): Promise<FoodEntry[]> {
+  return parseFoodEntries(await fsUserRequest({ method: 'food_entries.get', date: String(mskDayNumber(date)) }));
+}
+
 export type CreateFoodEntryInput = {
   foodId: string;
   name: string;

@@ -5,6 +5,7 @@ import { isInvalidTokenError } from './fatsecret.js';
 import { flushWithFatSecret } from './food-buffer.js';
 import { startInboxServer } from './inbox.js';
 import { log, logError } from './log.js';
+import { startFoodReminders } from './reminders.js';
 
 const FOOD_BUFFER_FLUSH_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -44,6 +45,7 @@ if (config.ROKID_MODE === 'mac') {
 startInboxServer();
 flushFoodBuffer();
 setInterval(flushFoodBuffer, FOOD_BUFFER_FLUSH_INTERVAL_MS);
+startFoodReminders((text) => bot.api.sendMessage(config.OWNER_TELEGRAM_ID, text).then(() => undefined));
 bot.api.setMyCommands(BOT_COMMANDS).catch((e) => logError('set-my-commands', e));
 bot.start({
   onStart: () => log('rokid-ai бот запущен, жду голосовые и фото'),

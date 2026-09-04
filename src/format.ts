@@ -63,8 +63,15 @@ export function formatIntent(intent: Intent): string {
         `🎙 Похоже на разговор про встречу: «${intent.topic}». ` +
         'Пришли саму запись голосовым или аудиофайлом (длиннее 3 минут) — сделаю саммари.'
       );
-    case 'note':
-      return [`📝 Записала заметку: ${intent.text}\nПоследние — /notes`, ...skippedLine(intent.skipped)].join('\n');
+    case 'other':
+      return [
+        `🤷 Не поняла, что сделать с «${intent.text}». Умею: встречи в календарь, еду в FatSecret ` +
+          '(голосом, текстом, фото, штрихкод), саммари записи, повестку («что у меня сегодня») ' +
+          'и итоги дня по еде («сколько я сегодня съел»).',
+        ...skippedLine(intent.skipped),
+      ].join('\n');
+    case 'food_summary':
+      return '📊 Считаю итоги дня…';
     // Обычно перехватываются в applyIntent до форматирования.
     case 'cancel_last':
       return '↩️ Отменяю последнюю запись…';
