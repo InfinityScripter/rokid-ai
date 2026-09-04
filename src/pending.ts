@@ -8,8 +8,10 @@ import type { FoodMatch, FoodMeal } from './food.js';
 // минутной давности отвечало «устарела» всплывашкой, которую легко не
 // заметить. Карточек не больше MAX_CARDS и не старше TTL — файл не растёт.
 
-export type PendingCard = { meal: FoodMeal; matches: FoodMatch[]; header?: string; createdAt: string };
-export type PendingEdit = { key: string; meal: FoodMeal; matches: FoodMatch[] };
+// date — дневниковый день YYYY-MM-DD; нет у карточек, сохранённых до этого
+// поля: тогда день — сегодняшний на момент записи.
+export type PendingCard = { meal: FoodMeal; matches: FoodMatch[]; header?: string; date?: string; createdAt: string };
+export type PendingEdit = { key: string; meal: FoodMeal; matches: FoodMatch[]; date?: string };
 type CardInput = Omit<PendingCard, 'createdAt'> & { createdAt?: string };
 type StateFile = { cards: Record<string, PendingCard>; edit: PendingEdit | null; barcodeArmed: boolean };
 

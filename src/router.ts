@@ -28,6 +28,7 @@ export const intentSchema = z.discriminatedUnion('intent', [
   z.object({
     intent: z.literal('food_log'),
     meal: z.enum(['breakfast', 'lunch', 'dinner', 'other']),
+    date: z.string().optional().describe('YYYY-MM-DD по Москве, только если день назван явно'),
     items: z.array(
       z.object({
         name: z.string(),
@@ -43,6 +44,7 @@ export const intentSchema = z.discriminatedUnion('intent', [
   }),
   z.object({
     intent: z.literal('food_summary'),
+    date: z.string().optional().describe('YYYY-MM-DD по Москве, только если день назван явно'),
   }),
   z.object({
     intent: z.literal('other'),
@@ -102,6 +104,12 @@ const routerTool: OpenAI.Chat.Completions.ChatCompletionTool = {
           description: 'распознанные, но не обработанные части: повторяющиеся серии, побочные темы заметки',
         },
         meal: { type: 'string', enum: ['breakfast', 'lunch', 'dinner', 'other'] },
+        date: {
+          type: 'string',
+          description:
+            'YYYY-MM-DD по Москве — день еды (food_log) или итогов (food_summary), только если назван явно: ' +
+            '«вчера», «позавчера», «3 сентября». «Сегодня» или без указания — не заполняй',
+        },
         items: {
           type: 'array',
           items: {
@@ -176,8 +184,10 @@ export async function routeText(text: string, now: Date): Promise<Intent> {
         'Еда («съел», «на обед было») → food_log. Для каждого продукта заполни query — короткое английское ' +
         'название для поиска в американской базе продуктов («борщ» → "borscht", «два тоста с сыром» → ' +
         '"toast with cheese"). Просьба сделать саммари разговора → meeting_audio. ' +
-        'Вопрос про съеденное за сегодня — «сколько я сегодня съел», «что я ел», «сколько калорий набрал», ' +
-        '«итоги дня по еде» → food_summary. ' +
+        'Если день еды назван явно («вчера на ужин…», «позавчера», «3 сентября») — заполни date ' +
+        '(YYYY-MM-DD по Москве, считай от текущего момента); «сегодня» или без указания — date не заполняй. ' +
+        'Вопрос про съеденное — «сколько я сегодня съел», «что я ел», «сколько калорий набрал», ' +
+        '«итоги дня по еде» → food_summary; «что я ел вчера», «итоги за вчера» → food_summary с date. ' +
         'Всё прочее (мысли, заметки, просьбы не по теме) → other с исходным текстом.',
     },
   ]);
