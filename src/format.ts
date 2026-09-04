@@ -85,6 +85,9 @@ export function formatIntent(intent: Intent): string {
       ].join('\n');
     case 'food_summary':
       return '📊 Считаю итоги дня…';
+    // Перехватывается в applyIntent (setGoalReply).
+    case 'food_goal':
+      return `🎯 Ставлю норму ${intent.kcal} ккал`;
     // Обычно перехватываются в applyIntent до форматирования.
     case 'cancel_last':
       return '↩️ Отменяю последнюю запись…';

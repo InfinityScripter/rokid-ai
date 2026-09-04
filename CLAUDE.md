@@ -30,7 +30,8 @@
   `food-buffer.ts` (буфер до одобрения Premier Free), `barcode.ts` (zxing-wasm
   → модель как запасной путь, Open Food Facts для российских товаров).
 - `meeting.ts` — саммари длинных записей; `reminders.ts` — напоминания
-  14:30/21:30 МСК и итоги дня по дневнику FatSecret (`food_entries.get`).
+  14:30/21:30 МСК и итоги дня по дневнику FatSecret (`food_entries.get`);
+  `goal.ts` — дневная норма (`*.goal.json`), остаток до неё в итогах.
 - `pending.ts` — карточки еды с кнопками, правка и режим «штрихкод» на диске
   (`*.pending.json`): переживают перезапуск бота при деплое.
 
