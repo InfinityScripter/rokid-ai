@@ -47,6 +47,10 @@ export const intentSchema = z.discriminatedUnion('intent', [
     date: z.string().optional().describe('YYYY-MM-DD по Москве, только если день назван явно'),
   }),
   z.object({
+    intent: z.literal('food_goal'),
+    kcal: z.number().describe('дневная норма калорий'),
+  }),
+  z.object({
     intent: z.literal('other'),
     text: z.string(),
     skipped: z.array(z.string()).default([]),
@@ -74,7 +78,7 @@ const routerTool: OpenAI.Chat.Completions.ChatCompletionTool = {
       properties: {
         intent: {
           type: 'string',
-          enum: ['calendar_event', 'food_log', 'meeting_audio', 'food_summary', 'other', 'cancel_last', 'agenda'],
+          enum: ['calendar_event', 'food_log', 'meeting_audio', 'food_summary', 'food_goal', 'other', 'cancel_last', 'agenda'],
         },
         from: { type: 'string', description: 'ISO 8601 с таймзоной — начало периода для agenda' },
         to: { type: 'string', description: 'ISO 8601 с таймзоной — конец периода для agenda' },
@@ -124,6 +128,7 @@ const routerTool: OpenAI.Chat.Completions.ChatCompletionTool = {
         },
         topic: { type: 'string' },
         text: { type: 'string' },
+        kcal: { type: 'number', description: 'дневная норма калорий для food_goal' },
       },
       required: ['intent'],
     },
@@ -188,6 +193,7 @@ export async function routeText(text: string, now: Date): Promise<Intent> {
         '(YYYY-MM-DD по Москве, считай от текущего момента); «сегодня» или без указания — date не заполняй. ' +
         'Вопрос про съеденное — «сколько я сегодня съел», «что я ел», «сколько калорий набрал», ' +
         '«итоги дня по еде» → food_summary; «что я ел вчера», «итоги за вчера» → food_summary с date. ' +
+        'Просьба поставить дневную норму калорий («поставь норму 2200», «моя норма 2000 ккал») → food_goal с kcal. ' +
         'Всё прочее (мысли, заметки, просьбы не по теме) → other с исходным текстом.',
     },
   ]);

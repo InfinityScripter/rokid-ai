@@ -147,3 +147,27 @@ test('formatWeekSummary: 7 дней подряд, пустые как «пуст
   assert.equal(lines[7], 'пт 4 сен — пусто');
   assert.equal(lines[9], 'Среднее за 2 дн. с записями: 1725 ккал · Б 89 г · Ж 56 г · У 180 г');
 });
+
+test('formatDaySummary и formatWeekSummary с нормой: остаток/перебор и пометка дней сверх нормы', () => {
+  const day = formatDaySummary([entry('обед', 'lunch', 1450, [78, 52, 160])], {
+    kind: 'manual',
+    buffered: 0,
+    date: '2026-09-03',
+    today: '2026-09-03',
+    goal: { kcal: 2200, protein: 150 },
+  });
+  assert.equal(day.split('\n')[2], '🎯 Норма 2200 ккал: осталось 750 ккал · Б 78/150');
+
+  const week = formatWeekSummary(
+    [
+      { date: '2026-09-03', calories: 2450, protein: 78, fat: 52, carbs: 160 },
+      { date: '2026-09-04', calories: 1000, protein: 10, fat: 10, carbs: 10 },
+    ],
+    '2026-09-04',
+    { kcal: 2200 },
+  );
+  const lines = week.split('\n');
+  assert.equal(lines[0], '📈 Последние 7 дней (норма 2200 ккал):');
+  assert.equal(lines[6], 'чт 3 сен — 2450 ккал · Б 78 г · Ж 52 г · У 160 г ⚠️ +250');
+  assert.equal(lines[7], 'пт 4 сен — 1000 ккал · Б 10 г · Ж 10 г · У 10 г');
+});

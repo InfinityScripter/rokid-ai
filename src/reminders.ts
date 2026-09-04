@@ -17,6 +17,7 @@ import {
   type FoodEntry,
 } from './fatsecret.js';
 import { bufferSize } from './food-buffer.js';
+import { goalLine, loadGoal, type Goal } from './goal.js';
 import { log, logError } from './log.js';
 
 // Напоминания по еде: днём — «что уже записано, чего не хватает», вечером —
@@ -125,7 +126,7 @@ function totalsLine(t: { calories: number; protein: number; fat: number; carbs: 
   return `${fmt(t.calories)} ккал · Б ${fmt(t.protein)} г · Ж ${fmt(t.fat)} г · У ${fmt(t.carbs)} г`;
 }
 
-export type SummaryOptions = { kind: SummaryKind; buffered: number; date: string; today: string };
+export type SummaryOptions = { kind: SummaryKind; buffered: number; date: string; today: string; goal?: Goal | null };
 
 export function formatDaySummary(entries: FoodEntry[], opts: SummaryOptions): string {
   const label = dayLabel(opts.date, opts.today);
@@ -147,7 +148,9 @@ export function formatDaySummary(entries: FoodEntry[], opts: SummaryOptions): st
       .join('\n');
   }
 
-  const lines = [title, `Итого: ${totalsLine(totalsOf(entries))}`];
+  const totals = totalsOf(entries);
+  const lines = [title, `Итого: ${totalsLine(totals)}`];
+  if (opts.goal) lines.push(goalLine(opts.goal, totals));
   const missing: string[] = [];
   for (const meal of MEAL_ORDER) {
     const own = entries.filter((e) => e.meal === meal);
@@ -173,9 +176,9 @@ export function formatDaySummary(entries: FoodEntry[], opts: SummaryOptions): st
 
 // Последние 7 дней по итогам месяца: дни без записей FatSecret не отдаёт —
 // показываем их как «пусто», среднее считаем только по заполненным.
-export function formatWeekSummary(days: DayTotals[], today: string): string {
+export function formatWeekSummary(days: DayTotals[], today: string, goal?: Goal | null): string {
   const byDate = new Map(days.map((d) => [d.date, d]));
-  const lines = ['📈 Последние 7 дней:'];
+  const lines = [goal ? `📈 Последние 7 дней (норма ${goal.kcal} ккал):` : '📈 Последние 7 дней:'];
   const filled: DayTotals[] = [];
   for (let back = 6; back >= 0; back -= 1) {
     const date = shiftDate(today, -back);
@@ -186,7 +189,8 @@ export function formatWeekSummary(days: DayTotals[], today: string): string {
       continue;
     }
     filled.push(totals);
-    lines.push(`${name} — ${totalsLine(totals)}`);
+    const over = goal && totals.calories > goal.kcal ? ` ⚠️ +${fmt(totals.calories - goal.kcal)}` : '';
+    lines.push(`${name} — ${totalsLine(totals)}${over}`);
   }
   if (filled.length === 0) {
     lines.push('', 'За неделю в дневнике ничего нет.');
@@ -222,7 +226,7 @@ export async function foodDaySummary(date: string, kind: SummaryKind): Promise<s
   const today = diaryDate(new Date());
   try {
     const [entries, buffered] = await Promise.all([fsGetFoodEntries(date), bufferSize()]);
-    return formatDaySummary(entries, { kind, buffered, date, today });
+    return formatDaySummary(entries, { kind, buffered, date, today, goal: loadGoal() });
   } catch (error) {
     logError('food-summary', error);
     return errorText(error);
@@ -236,7 +240,7 @@ export async function foodWeekSummary(): Promise<string> {
     const months = [today];
     if (weekStart.slice(0, 7) !== today.slice(0, 7)) months.push(weekStart);
     const totals = (await Promise.all(months.map((m) => fsGetMonthTotals(m)))).flat();
-    return formatWeekSummary(totals, today);
+    return formatWeekSummary(totals, today, loadGoal());
   } catch (error) {
     logError('food-week', error);
     return errorText(error);
@@ -249,7 +253,11 @@ export async function dayTotalsLine(date: string): Promise<string | null> {
   try {
     const entries = await fsGetFoodEntries(date);
     if (entries.length === 0) return null;
-    return `За ${dayLabel(date, diaryDate(new Date()))} теперь: ${totalsLine(totalsOf(entries))}`;
+    const totals = totalsOf(entries);
+    const goal = loadGoal();
+    return [`За ${dayLabel(date, diaryDate(new Date()))} теперь: ${totalsLine(totals)}`, goal ? goalLine(goal, totals) : null]
+      .filter(Boolean)
+      .join('\n');
   } catch (error) {
     logError('food-totals', error);
     return null;

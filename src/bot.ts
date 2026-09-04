@@ -24,6 +24,7 @@ import {
   type FoodMeal,
 } from './food.js';
 import { formatEventLine, formatFoodCard, formatIntent, pluralRu } from './format.js';
+import { formatGoal, loadGoal, parseGoal, saveGoal } from './goal.js';
 import { log, logError } from './log.js';
 import { splitTranscript, summarizeMeeting, transcribeLong } from './meeting.js';
 import { PendingState } from './pending.js';
@@ -285,6 +286,28 @@ async function daySummaryReply(date?: string): Promise<IntentReply> {
   return { text: await foodDaySummary(day, 'manual'), keyboard: summaryKeyboard(day, today) };
 }
 
+// /goal без аргумента — показать норму; «/goal 2200 б150 ж70 у200» — задать;
+// «/goal off» — убрать. Остаток до нормы появляется в итогах и после записи.
+async function setGoalReply(arg: string): Promise<IntentReply> {
+  if (!arg.trim()) {
+    const current = loadGoal();
+    return {
+      text: current
+        ? `🎯 Норма: ${formatGoal(current)}. Изменить: /goal 2200 (можно с БЖУ: /goal 2200 б150 ж70 у200), убрать: /goal off.`
+        : 'Норма не задана. Задай: /goal 2200 — тогда в итогах будет остаток до нормы (можно с БЖУ: /goal 2200 б150 ж70 у200).',
+    };
+  }
+  const goal = parseGoal(arg);
+  if (goal === 'invalid') {
+    return { text: 'Не поняла норму. Пример: /goal 2200 или /goal 2200 б150 ж70 у200; убрать — /goal off.' };
+  }
+  saveGoal(goal);
+  if (!goal) return { text: '🎯 Норму убрала — в итогах будет только факт.' };
+  const today = diaryDate(new Date());
+  const totals = fsLinked() ? await dayTotalsLine(today) : null;
+  return { text: [`🎯 Норма: ${formatGoal(goal)}.`, totals].filter(Boolean).join('\n') };
+}
+
 async function showFoodCard(
   meal: FoodMeal,
   items: { name: string; amount: string; query: string }[],
@@ -324,6 +347,9 @@ export async function applyIntent(intent: Intent): Promise<IntentReply> {
   }
   if (intent.intent === 'food_summary') {
     return daySummaryReply(validDate(intent.date));
+  }
+  if (intent.intent === 'food_goal') {
+    return setGoalReply(String(intent.kcal));
   }
   if (intent.intent !== 'calendar_event' || intent.uncertain.length > 0) {
     return { text: formatIntent(intent) };
@@ -558,7 +584,8 @@ bot.command('start', async (ctx) => {
       '✍️ Текст → то же, что и голосовое\n' +
       '📊 Кнопка «Итоги дня» (или /summary, /summary вчера) → что записано в FatSecret; ' +
       'сама напомню в 14:30 и 21:30 по Москве\n' +
-      '🌙 До 04:00 еда пишется на вчерашний день; «вчера на ужин …» — тоже понимаю',
+      '🌙 До 04:00 еда пишется на вчерашний день; «вчера на ужин …» — тоже понимаю\n' +
+      '🎯 /goal 2200 → норма, в итогах будет остаток до неё',
     { reply_markup: MAIN_KEYBOARD },
   );
 });
@@ -582,6 +609,11 @@ bot.command(['barcode', 'barkode', 'shtrihkod'], async (ctx) => {
     return;
   }
   await ctx.reply(armBarcodeMode(), { reply_markup: MAIN_KEYBOARD });
+});
+
+bot.command(['goal', 'norma'], async (ctx) => {
+  const reply = await setGoalReply(String(ctx.match ?? ''));
+  await ctx.reply(reply.text, { reply_markup: MAIN_KEYBOARD });
 });
 
 bot.command(['summary', 'itogi', 'today'], async (ctx) => {
@@ -723,6 +755,7 @@ bot.on('message:photo', async (ctx) => {
 export const BOT_COMMANDS = [
   { command: 'barcode', description: 'Следующее фото — только по штрихкоду (или /barcode <цифры>)' },
   { command: 'summary', description: 'Итоги дня по еде: ккал, БЖУ, чего не хватает (/summary вчера, 3 сентября)' },
+  { command: 'goal', description: 'Дневная норма: /goal 2200 (с БЖУ: /goal 2200 б150 ж70 у200), /goal off' },
   { command: 'fatsecret_link', description: 'Привязать аккаунт FatSecret' },
   { command: 'start', description: 'Что умеет бот' },
 ];
