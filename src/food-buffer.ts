@@ -36,7 +36,7 @@ function load(): BufferFile {
 }
 
 function save(data: BufferFile): void {
-  writeJsonFile(bufferPath(), data);
+  writeJsonFile(bufferPath(), data, 0o600);
 }
 
 // bufferPush (синхронная запись) может попасть между итерациями bufferFlush

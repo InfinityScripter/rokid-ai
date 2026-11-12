@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -33,6 +33,60 @@ test('bufferPush: записи попадают в файл буфера', async
   assert.equal(data.entries.length, 2);
   assert.equal(data.entries[0].name, 'суп');
   assert.equal(data.entries[1].name, 'хлеб');
+});
+
+test('bufferPush: новая очередь доступна только владельцу при umask 022', async (t) => {
+  t.after(() => rmSync(bufferPath(), { force: true }));
+  const previousUmask = process.umask(0o022);
+  try {
+    await bufferPush([entry('суп')]);
+    assert.equal(statSync(bufferPath()).mode & 0o777, 0o600);
+  } finally {
+    process.umask(previousUmask);
+  }
+});
+
+test('bufferPush: замена очереди с правами 0600 не открывает её другим пользователям', async (t) => {
+  t.after(() => rmSync(bufferPath(), { force: true }));
+  const previousUmask = process.umask(0o022);
+  try {
+    writeFileSync(bufferPath(), JSON.stringify({ entries: [entry('суп')] }), { mode: 0o600 });
+    assert.equal(statSync(bufferPath()).mode & 0o777, 0o600);
+    await bufferPush([entry('хлеб')]);
+    assert.equal(statSync(bufferPath()).mode & 0o777, 0o600);
+  } finally {
+    process.umask(previousUmask);
+  }
+});
+
+test('bufferFlush: старая очередь переживает частичную отправку и повтор без дубликатов', async (t) => {
+  t.after(() => rmSync(bufferPath(), { force: true }));
+  const entries = [entry('суп'), entry('хлеб'), entry('чай')];
+  writeFileSync(bufferPath(), JSON.stringify({ entries }));
+  const failure = new Error('FatSecret временно недоступен');
+  const firstCalls: string[] = [];
+  const first = await bufferFlush(async (e) => {
+    firstCalls.push(e.name);
+    if (e.name === 'хлеб') throw failure;
+    return 'sent-soup';
+  });
+  assert.deepEqual(firstCalls, ['суп', 'хлеб']);
+  assert.equal(first.sent, 1);
+  assert.equal(first.left, 2);
+  assert.equal(first.error, failure);
+  const saved = JSON.parse(readFileSync(bufferPath(), 'utf8')) as { entries: BufferedEntry[] };
+  assert.deepEqual(saved.entries, entries.slice(1));
+
+  const retryCalls: string[] = [];
+  const retry = await bufferFlush(async (e) => {
+    retryCalls.push(e.name);
+    return `sent-${e.name}`;
+  });
+  assert.deepEqual(retryCalls, ['хлеб', 'чай'], 'успешно отправленный суп не уходит повторно');
+  assert.equal(retry.sent, 2);
+  assert.equal(retry.left, 0);
+  assert.equal(retry.error, undefined);
+  assert.deepEqual(JSON.parse(readFileSync(bufferPath(), 'utf8')).entries, []);
 });
 
 test('bufferFlush: падение отправителя на второй записи останавливает флаш и оставляет остаток', async (t) => {
