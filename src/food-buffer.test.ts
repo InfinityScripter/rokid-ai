@@ -81,6 +81,50 @@ test('bufferDrop: отмена вычищает из буфера то, что �
   assert.equal(await bufferSize(), 1);
 });
 
+test('bufferDrop: отмена другой карточки сохраняет причину остановки и историю отправки', async (t) => {
+  t.after(() => rmSync(bufferPath(), { force: true }));
+  const { bufferDrop, bufferStatus } = await import('./food-buffer.js');
+  const pending = { ...entry('хлеб'), batchId: 'stuck-card' };
+  await bufferPush([entry('суп'), pending]);
+  await bufferFlush(async (e) => {
+    if (e.batchId === 'stuck-card') throw new Error('FatSecret временно недоступен');
+    return 'sent-soup';
+  });
+  const stuck = await bufferStatus();
+  assert.equal(stuck.lastError, 'FatSecret временно недоступен');
+  assert.ok(stuck.lastErrorAt);
+  assert.ok(stuck.lastSuccessAt);
+
+  await bufferPush([{ ...entry('чай'), batchId: 'cancelled-card' }]);
+  assert.equal(await bufferDrop((e) => e.batchId === 'missing-card'), 0);
+  assert.deepEqual(await bufferStatus(), { ...stuck, size: 2 });
+
+  assert.equal(await bufferDrop((e) => e.batchId === 'cancelled-card'), 1);
+  assert.deepEqual(await bufferStatus(), stuck, 'неотправленная карточка и её диагностика остались');
+  assert.deepEqual(JSON.parse(readFileSync(bufferPath(), 'utf8')).entries, [pending]);
+});
+
+test('bufferDrop: полная отмена сохраняет последний успех, но новая очередь не наследует ошибку', async (t) => {
+  t.after(() => rmSync(bufferPath(), { force: true }));
+  const { bufferDrop, bufferStatus } = await import('./food-buffer.js');
+  await bufferPush([entry('суп')]);
+  await bufferFlush(async () => 'sent-soup');
+  const sent = await bufferStatus();
+  assert.ok(sent.lastSuccessAt);
+
+  await bufferPush([{ ...entry('хлеб'), batchId: 'cancelled-card' }]);
+  await bufferFlush(async () => {
+    throw new Error('FatSecret временно недоступен');
+  });
+  assert.ok((await bufferStatus()).lastErrorAt);
+
+  assert.equal(await bufferDrop((e) => e.batchId === 'cancelled-card'), 1);
+  assert.deepEqual(await bufferStatus(), sent, 'отмена не стирает историю успеха и снимает ошибку пустой очереди');
+
+  await bufferPush([entry('чай')]);
+  assert.deepEqual(await bufferStatus(), { ...sent, size: 1 }, 'новую запись ещё не пытались отправить');
+});
+
 test('очередь помнит причину, по которой встала, и забывает её после успеха', async (t) => {
   t.after(() => rmSync(bufferPath(), { force: true }));
   const { bufferStatus } = await import('./food-buffer.js');

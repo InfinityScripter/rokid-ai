@@ -137,7 +137,14 @@ export function bufferDrop(match: (entry: BufferedEntry) => boolean): Promise<nu
     const data = load();
     const kept = data.entries.filter((entry) => !match(entry));
     const dropped = data.entries.length - kept.length;
-    if (dropped > 0) save({ entries: kept });
+    if (dropped > 0) {
+      data.entries = kept;
+      if (kept.length === 0) {
+        data.lastError = undefined;
+        data.lastErrorAt = undefined;
+      }
+      save(data);
+    }
     return dropped;
   });
 }
